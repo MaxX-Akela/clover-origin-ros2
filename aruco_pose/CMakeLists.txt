@@ -47,6 +47,18 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   DEPENDENCIES std_msgs geometry_msgs
 )
 
+add_library(${PROJECT_NAME}_components SHARED
+  src/draw.cpp
+)
+target_include_directories(${PROJECT_NAME}_components PRIVATE ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(${PROJECT_NAME}_components ${OpenCV_LIBRARIES})
+
+install(TARGETS ${PROJECT_NAME}_components
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+)
+
 ament_export_dependencies(rosidl_default_runtime)
 
 ament_package()
