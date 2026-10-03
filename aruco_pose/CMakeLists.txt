@@ -48,10 +48,29 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 )
 
 add_library(${PROJECT_NAME}_components SHARED
+  src/aruco_detect.cpp
   src/draw.cpp
 )
 target_include_directories(${PROJECT_NAME}_components PRIVATE ${OpenCV_INCLUDE_DIRS})
-target_link_libraries(${PROJECT_NAME}_components ${OpenCV_LIBRARIES})
+
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} rosidl_typesupport_cpp)
+target_link_libraries(${PROJECT_NAME}_components
+  ${cpp_typesupport_target}
+  ${OpenCV_LIBRARIES}
+  rclcpp::rclcpp
+  rclcpp_components::component
+  image_transport::image_transport
+  cv_bridge::cv_bridge
+  tf2::tf2
+  tf2_ros::tf2_ros
+  tf2_geometry_msgs::tf2_geometry_msgs
+  message_filters::message_filters
+  ${sensor_msgs_TARGETS}
+  ${geometry_msgs_TARGETS}
+  ${visualization_msgs_TARGETS}
+)
+
+rclcpp_components_register_nodes(${PROJECT_NAME}_components "aruco_pose::ArucoDetect")
 
 install(TARGETS ${PROJECT_NAME}_components
   ARCHIVE DESTINATION lib
