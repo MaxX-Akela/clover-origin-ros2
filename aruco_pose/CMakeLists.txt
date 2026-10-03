@@ -90,4 +90,11 @@ install(DIRECTORY launch map
 
 ament_export_dependencies(rosidl_default_runtime)
 
+if(BUILD_TESTING)
+  find_package(launch_testing_ament_cmake REQUIRED)
+  foreach(_test basic test_parser_pass test_parser_empty_map test_node_failure largemap crash_opencv duplicate)
+    add_launch_test(test/${_test}.py TARGET aruco_pose_${_test} TIMEOUT 180)
+  endforeach()
+endif()
+
 ament_package()
