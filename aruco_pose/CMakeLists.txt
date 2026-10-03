@@ -80,6 +80,14 @@ install(TARGETS ${PROJECT_NAME}_components
   RUNTIME DESTINATION bin
 )
 
+install(PROGRAMS src/genmap.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY map
+  DESTINATION share/${PROJECT_NAME}
+)
+
 ament_export_dependencies(rosidl_default_runtime)
 
 ament_package()
