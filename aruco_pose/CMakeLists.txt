@@ -49,6 +49,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
 add_library(${PROJECT_NAME}_components SHARED
   src/aruco_detect.cpp
+  src/aruco_map.cpp
   src/draw.cpp
 )
 target_include_directories(${PROJECT_NAME}_components PRIVATE ${OpenCV_INCLUDE_DIRS})
@@ -71,6 +72,7 @@ target_link_libraries(${PROJECT_NAME}_components
 )
 
 rclcpp_components_register_nodes(${PROJECT_NAME}_components "aruco_pose::ArucoDetect")
+rclcpp_components_register_nodes(${PROJECT_NAME}_components "aruco_pose::ArucoMap")
 
 install(TARGETS ${PROJECT_NAME}_components
   ARCHIVE DESTINATION lib
