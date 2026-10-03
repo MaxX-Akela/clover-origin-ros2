@@ -84,7 +84,7 @@ install(PROGRAMS src/genmap.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(DIRECTORY map
+install(DIRECTORY launch map
   DESTINATION share/${PROJECT_NAME}
 )
 
