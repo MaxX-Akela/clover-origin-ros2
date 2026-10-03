@@ -18,6 +18,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 
 # Workaround for OpenCV 3/4 support
 set(_opencv_version 4)
@@ -37,5 +38,15 @@ else()
 endif()
 message(STATUS "OpenCV include dirs: ${OpenCV_INCLUDE_DIRS}")
 message(STATUS "OpenCV libraries: ${OpenCV_LIBRARIES}")
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/Point2D.msg"
+  "msg/Marker.msg"
+  "msg/MarkerArray.msg"
+  "srv/SetMarkers.srv"
+  DEPENDENCIES std_msgs geometry_msgs
+)
+
+ament_export_dependencies(rosidl_default_runtime)
 
 ament_package()
