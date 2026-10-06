@@ -1,6 +1,6 @@
 # Forked from [CopterExpress/clover](https://github.com/CopterExpress/clover)
 
-> Это порт Clover с ROS 1 (Noetic) на **ROS 2 Jazzy**. API, пакеты и образ могут меняться без обратной совместимости. Стабильную версию на ROS 1 ищите в [оригинальном репозитории](https://github.com/CopterExpress/clover).
+> Это порт Clover с ROS 1 (Noetic) на **ROS 2 Jazzy**. Стабильную версию на ROS 1 ищите в [оригинальном репозитории](https://github.com/CopterExpress/clover).
 
 # clover🍀 for ROS 2: create autonomous drones easily
 
