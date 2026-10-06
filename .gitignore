@@ -1,0 +1,7 @@
+node_modules/
+_book/
+package-lock.json
+/.vsode/
+/log/
+/install/
+/build/
