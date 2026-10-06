@@ -15,6 +15,8 @@ find_package(std_srvs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(mavros_msgs REQUIRED)
+find_package(led_msgs REQUIRED)
+find_package(rcl_interfaces REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(image_transport REQUIRED)
 find_package(cv_bridge REQUIRED)
@@ -91,6 +93,17 @@ target_link_libraries(rc
   ${mavros_msgs_TARGETS}
 )
 
+add_executable(led src/led.cpp)
+target_compile_options(led PRIVATE -Wall -Wextra)
+target_link_libraries(led
+  ${cpp_typesupport_target}
+  rclcpp::rclcpp
+  ${sensor_msgs_TARGETS}
+  ${mavros_msgs_TARGETS}
+  ${led_msgs_TARGETS}
+  ${rcl_interfaces_TARGETS}
+)
+
 # optical_flow is a component, optical_flow executable runs it in a separate process
 add_library(optical_flow_component SHARED src/optical_flow.cpp)
 target_compile_options(optical_flow_component PRIVATE -Wall -Wextra)
@@ -112,7 +125,7 @@ rclcpp_components_register_node(optical_flow_component
   EXECUTABLE optical_flow
 )
 
-install(TARGETS simple_offboard shell camera_markers vpe_publisher rc
+install(TARGETS simple_offboard shell camera_markers vpe_publisher rc led
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -120,6 +133,11 @@ install(TARGETS optical_flow_component
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
+)
+
+install(PROGRAMS src/selfcheck.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME selfcheck
 )
 
 # rosidl generates the clover Python package itself, so the module can't be
