@@ -140,6 +140,25 @@ install(PROGRAMS src/selfcheck.py
   RENAME selfcheck
 )
 
+install(PROGRAMS src/mavros_params.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME mavros_params
+)
+
+install(PROGRAMS src/waitfile
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+# ROS 1 launch files are kept in the repository, but not installed
+install(DIRECTORY launch
+  DESTINATION share/${PROJECT_NAME}
+  FILES_MATCHING PATTERN "*.launch.py"
+)
+
+install(DIRECTORY config camera_info udev
+  DESTINATION share/${PROJECT_NAME}
+)
+
 # rosidl generates the clover Python package itself, so the module can't be
 # installed with ament_python_install_package; replace the generated __init__.py
 install(FILES src/clover/__init__.py

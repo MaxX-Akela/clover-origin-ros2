@@ -44,7 +44,8 @@
 - **`mavros/setpoint_attitude/attitude` по умолчанию отсутствует.** Топик появляется только при
   `setpoint_attitude: use_quaternion: true` (в оригинальном `mavros_config.yaml` так и стоит). Пока
   параметры mavros не перенесены (этап F), `set_attitude` отвечает успехом, но его сообщения никто
-  не получает.
+  не получает. **На этапе F выяснилось, что в mavros 2.15.1 включить `use_quaternion` нельзя вообще**,
+  см. раздел «Launch и конфиги».
 - **Параметры плагинов** принадлежат отдельным узлам (`/mavros/local_position`, `/mavros/sys`, ...),
   вложенность записывается через точку: `tf.frame_id`, `tf.child_frame_id`.
 - Сервиса `mavros/param/get` нет, есть `mavros/param/set` (`mavros_msgs/srv/ParamSetV2`) и стандартные
@@ -63,7 +64,7 @@
   `mavlink_topic`, см. раздел `rc`.
 - У узла `/mavros/local_position` есть и `frame_id`, и `tf.frame_id` (оба `map` по умолчанию),
   `tf.child_frame_id` — `base_link`.
-- Не проверено: `mavros/distance_sensor/*` (топики создаются по конфигурации плагина).
+- `mavros/distance_sensor/*`: проверено на этапе F, см. раздел «Launch и конфиги».
 
 ## `simple_offboard`
 
@@ -366,6 +367,244 @@
 - `Boot duration` берёт только секунды: `1min 2.3s` читается как 2.3 с.
 - `check_camera` принимает имя камеры, но сообщение об ориентации его не содержит.
 
+## Launch и конфиги (этап F)
+
+Проверено сборкой, отдельными запусками каждого launch-файла с вариантами аргументов и
+`test/smoke_launch.py` (три режима: без FCU и камеры; с `mavros_node` без автопилота; с
+`main_camera.launch.py`, aruco и mock-камерой). С настоящей камерой, автопилотом, лентой и дальномером
+ничего не проверялось. **Шесть apt-пакетов не установлены** (`v4l2_camera`, `image_proc`, `topic_tools`,
+`web_video_server`, `rosbridge_server`, `tf2_web_republisher`), всё, что от них зависит, написано по
+документации и **не запускалось** (отмечено ниже).
+
+Файлы: `launch/*.launch.py`, `config/mavros.yaml`, `config/led_notify.yaml`, `src/mavros_params.py`.
+Старые `launch/*.launch` и `launch/mavros_config.yaml` лежат в репозитории, но не устанавливаются.
+
+### mavros
+
+- **Имена `/mavros/...` даёт имя узла UAS, а не пространство имён.** Процесс `mavros_node` создаёт узлы
+  `/mavros_node` (`fcu_url`, `gcs_url`, `tgt_system`, `tgt_component`), `/mavros_router` и `/mavros`
+  (`plugin_allowlist`, `plugin_denylist`, `uas_url`, `fcu_protocol`), плагины — узлы `/mavros/<имя>`.
+  В launch узел запускается **без `name` и без `namespace`**: `name='mavros'` переименовал бы все три узла,
+  `namespace='mavros'` удвоил бы имена. `MAVROS_NODE = 'mavros_node'` в `selfcheck.py` и
+  `mavros/local_position` в `mavros_frames.hpp` верны, не менялись (`selfcheck` выводит `fcu_url`, узлы
+  читают кадры без предупреждения).
+- **Список плагинов.** `plugin_whitelist` → `plugin_allowlist`. В mavros 2 allowlist только отменяет
+  denylist, поэтому задано `plugin_denylist: ['*']` + `plugin_allowlist: [...]`; сверено по списку узлов
+  `/mavros/*`. Плагин `vision_pose_estimate` теперь называется `vision_pose`. Имена узлов плагинов
+  отличаются от имён плагинов: `sys_status` → `mavros/sys`, `sys_time` → `mavros/time`, `command` →
+  `mavros/cmd`, `rc_io` → `mavros/rc`.
+- **Параметры плагинов при запуске не применяются (ограничение mavros 2.15.1).** Узлы плагинов создаются
+  с `use_global_arguments(false)` (`mavros/src/lib/plugin.cpp`), поэтому ни `--params-file`, ни `-p`, ни
+  ремапы процесса `mavros_node` до них не доходят: с любым YAML `conn_timeout` остаётся 10,
+  `local_position tf.send` — `false`. То же относится к штатному `px4.launch` из пакета mavros (проверено отдельно, см. «Проверка диагноза» ниже). В ветке
+  `ros2` апстрима это исправлено (плагин забирает переопределения по своему полному имени), в apt
+  исправления пока нет.
+- **Обход: узел `mavros_params`** (`src/mavros_params.py`, новый). Читает `config/mavros.yaml` и выставляет
+  параметры плагинов через их сервисы `set_parameters`, как только сервис появляется; при перезапуске
+  mavros (respawn) повторяет. Проверено: `conn_timeout: 8.0`, `tf.send: true`, `config` дальномеров
+  применяются. Между стартом mavros и применением параметров проходит до ~2 с. `config/mavros.yaml`
+  записан в формате апстрима (`/**/<узел плагина>: ros__parameters:`), так что с исправленным mavros он
+  применится и при запуске.
+- **`setpoint_attitude: use_quaternion: true` включить нельзя.** При запуске параметр не доходит (см. выше),
+  а на лету mavros отвечает `Invalid history policy enum value passed to QoSInitialization::from_rmw`
+  (в колбэке параметра используется ссылка на локальную переменную конструктора) и остаётся **без обеих
+  подписок**, `cmd_vel` и `attitude`. Поэтому `mavros_params` этот параметр пропускает (константа `SKIP`).
+  Следствие: топика `mavros/setpoint_attitude/attitude` нет, **`set_attitude` на mavros 2.15.1 не
+  работает** (сервис отвечает успехом, сообщения никто не получает). Нужен mavros с исправлением
+  (сборка ветки `ros2` из исходников или новая версия из apt).
+- **Параметры, которых в 2.15 нет** (в YAML не перенесены): `startup_px4_usb_quirk`, `gcs_quiet_mode`,
+  `time.timesync_avg_alpha` (теперь `timesync_alpha_initial/final`, `timesync_beta_*`),
+  `time.publish_sim_time`, `local_position tf.send_fcu`, `setpoint_attitude tf.*`,
+  `setpoint_position tf.*`, блок `odometry in/out`. `conn/heartbeat_rate` и `conn/timeout` →
+  `sys.heartbeat_rate`, `sys.conn_timeout`; `conn/timesync_rate`, `conn/system_time_rate` → `time.*`.
+  `target_system_id` → `tgt_system`. У `vision_pose` параметры называются через косую черту
+  (`tf/listen`), а не через точку, как написано в `px4_config.yaml` самого mavros.
+- `!degrees`: `angular_velocity_stdev: 0.0003490659` (0.02°), `ranger_fov: 0.118682` (6.8°).
+- `conn_timeout`: в оригинале 10 в YAML и 8 в launch (побеждал launch), в `config/mavros.yaml` записано 8.
+- **`distance_sensor`.** Настройки — один строковый параметр `config` с YAML внутри. Топики называются по
+  ключу датчика относительно `/mavros` (ключ `rangefinder` дал бы `/mavros/rangefinder`), поэтому ключи
+  записаны как `distance_sensor/rangefinder` и `distance_sensor/rangefinder_sub`: имена топиков совпадают
+  с ROS 1 и с тем, что ждёт `selfcheck`. Издатель и подписчик best effort.
+- **Ремап `mavros/distance_sensor/rangefinder_sub` → `rangefinder/range`** аргументами процесса невозможен
+  (та же причина). Вместо него `topic_tools relay` (узел `rangefinder_relay`) из `distance_sensor_remap` в
+  `mavros/distance_sensor/rangefinder_sub`. **Не запускалось** (`topic_tools` не установлен); без пакета
+  launch печатает предупреждение, данные дальномера в FCU не идут.
+- Дубль настроек по имени `rangefinder/range` (`<rosparam param="$(arg distance_sensor_remap)">`) не
+  перенесён: глобальных параметров в ROS 2 нет.
+- **`gcs_host`** (новый аргумент, по умолчанию пустой) заменяет `$(env ROS_HOSTNAME)` в `udp-b` и `udp-pb`.
+  Пустое значение даёт `udp-b://:14550@14550`. Отключить мост: `gcs_bridge:=false` (пустое
+  `gcs_bridge:=` `ros2 launch` не принимает).
+- Неизвестное значение `fcu_conn`: как в оригинале, `fcu_url` не задаётся (у mavros свой по умолчанию),
+  плюс сообщение в журнале.
+- `fcu_conn:=usb`: префикс `waitfile /dev/px4fmu`, `respawn` с задержкой 1 с — как в оригинале.
+  `src/waitfile` устанавливается как программа (`ros2 run clover waitfile`), окончания строк CRLF → LF.
+- **Узла `visualization` в `mavros_extras` для Jazzy нет** (есть только `servo_state_publisher` и
+  `terrain_server`). Аргумент `viz` оставлен, при `true` выводится сообщение.
+- При остановке по Ctrl+C `mavros_node` иногда завершается с кодом -2 (`process has died`), процессов
+  после этого не остаётся.
+- `rc`: при `use_fake_gcs: false` параметр `mavlink_topic` узлом не объявляется; launch передаёт
+  `/uas<fcu_sys_id>/mavlink_sink` на случай включения. `selfcheck` запускается отдельно, при
+  `fcu_sys_id` ≠ 1 его `mavlink_topic` и `mavlink_from_topic` нужно задавать вручную.
+
+### Проверка диагноза про параметры плагинов (после этапа F)
+
+Вопрос: правда ли, что штатный `px4.launch` тоже не применяет параметры плагинов, или причина в нашем
+`config/mavros.yaml` / `mavros.launch.py`. **Ответ: штатный launch тоже не применяет, причина в mavros
+2.15.1.** Проверено запуском без автопилота (`GEOGRAPHICLIB_DATA=~/.local/share/GeographicLib`).
+
+- **Версии.** `ros-jazzy-mavros 2.15.1-1noble.20260903.022619` (extras, msgs, libmavconn — тоже 2.15.1),
+  `apt-cache policy`: кандидат тот же, обновления в apt нет.
+- **Опыт.** Копия `px4.launch`, в которой `config_yaml` указывает на копию `px4_config.yaml` с тремя
+  правками: `sys: conn_timeout: 8.0`, `local_position: tf.send: true`,
+  `setpoint_attitude: use_quaternion: true`. `node.launch` и `px4_pluginlists.yaml` — штатные.
+  Запуск: `ros2 launch <копия>/px4.launch fcu_url:=udp://@127.0.0.1:14557`.
+- **Командная строка процесса** (`/proc/<pid>/cmdline`), файл с правками передан:
+
+  ```
+  /opt/ros/jazzy/lib/mavros/mavros_node --ros-args -r __ns:=/ --params-file /tmp/launch_params_... (x5:
+  fcu_url, gcs_url, tgt_system, tgt_component, fcu_protocol) --params-file
+  /opt/ros/jazzy/share/mavros/launch/px4_pluginlists.yaml --params-file <копия>/px4_config.yaml
+  ```
+
+- **Результат** (`ros2 param get`, через 15 с после старта):
+
+  ```
+  /mavros/sys conn_timeout                 -> Double value is: 10.0     (в файле 8.0)
+  /mavros/local_position tf.send           -> Boolean value is: False   (в файле true)
+  /mavros/setpoint_attitude use_quaternion -> Boolean value is: False   (в файле true)
+  /mavros_node fcu_url                     -> String value is: udp://@127.0.0.1:14557
+  ros2 topic list | grep setpoint_attitude -> .../cmd_vel, .../thrust (топика attitude нет)
+  ```
+
+  Параметры узлов `/mavros_node` и `/mavros` (`fcu_url`, `plugin_denylist`) из тех же файлов применяются
+  (в журнале `plugin_denylist pattern 'image_pub' does not match...`), параметры узлов плагинов — нет.
+- **Сравнение с нашим путём.** Формат один и тот же: `/**/<узел плагина>: ros__parameters:`, имена узлов
+  (`sys`, `time`, `local_position`, `setpoint_attitude`, ...) совпадают с `ros2 node list`. Способ передачи
+  тоже один: `parameters=[config, params]` в `Node` превращается в те же `--params-file`:
+
+  ```
+  /opt/ros/jazzy/lib/mavros/mavros_node --ros-args --params-file .../share/clover/config/mavros.yaml
+  --params-file /tmp/launch_params_...
+  ```
+
+  Отличия: штатный launch добавляет `-r __ns:=/` (пустой `namespace`), список плагинов у него в отдельном
+  файле под `/**:`, у нас в словаре `params`. На применение параметров плагинов ни то, ни другое не влияет.
+  В нашем запуске `conn_timeout: 8.0` и `tf.send: true` появляются только благодаря `mavros_params`.
+- **Причина в исходниках.** Тег `2.15.1` (`22ae5b7`), `mavros/src/lib/plugin.cpp`, конструктор
+  `Plugin::Plugin(UASPtr, const std::string & subnode, const rclcpp::NodeOptions &)`:
+  `node_options.use_global_arguments(false);` — вместе с ремапами отбрасываются `--params-file` и `-p`
+  (появилось в коммите `63f7392`, август 2026).
+- **Исправление в апстриме.** Коммит `d9b38f6` от 2026-09-27 «mavros: re-apply process parameter sources
+  to plugin sub-nodes», «Fixes #2294», вошёл в тег **`2.16.0`** (`5c68b90`, сейчас это и есть голова ветки
+  `ros2`). В том же конструкторе после `use_global_arguments(false)` добавлено: `rcl_arguments_get_param_overrides`
+  по глобальным аргументам контекста → `rclcpp::parameter_map_from(global_params, fqn)` для полного имени
+  `<uas>/<subnode>` → `node_options.parameter_overrides(merged)`. Добавлен тест
+  `mavros/test/test_plugin_params.cpp`. Наш формат `/**/sys:` под это сопоставление подходит.
+- **`setpoint_attitude.cpp` между 2.15.1 и 2.16.0 не менялся.** Колбэк `use_quaternion` захватывает
+  локальную `subscriber_qos` по ссылке; при объявлении параметра он вызывается внутри конструктора (переменная
+  жива), так что с 2.16.0 значение из YAML при запуске должно сработать, а смена на лету останется сломанной.
+  Это вывод из чтения кода, **не проверено**, пока 2.16.0 не собран.
+- **Доступность 2.16.0.** В `rosdistro` (`jazzy/distribution.yaml`) для mavros уже записан релиз `2.16.0-1`,
+  в основном apt-репозитории его пока нет (появится со следующей синхронизацией).
+- **Что тянет за собой 2.16.0** (diff 2.15.1..2.16.0): `mavros_msgs/msg/State.msg` получил новые константы
+  (`MODE_FLIX_*`), значит `mavros_msgs` нужно собирать тоже, а `clover` пересобрать поверх; у `mavros`
+  новая зависимость `rcl`; `node.launch` получил `respawn`.
+
+**План сборки из исходников (не выполнялся, ждёт решения).** Отдельное рабочее пространство-подложка, чтобы
+не класть чужой код в этот репозиторий:
+
+```
+mkdir -p ~/mavros_ws/src && cd ~/mavros_ws/src
+git clone --depth 1 --branch 2.16.0 https://github.com/mavlink/mavros.git   # vcs не установлен, хватает git
+cd ~/mavros_ws && source /opt/ros/jazzy/setup.bash
+rosdep check --from-paths src/mavros/libmavconn src/mavros/mavros_msgs src/mavros/mavros \
+  src/mavros/mavros_extras --ignore-src --rosdistro jazzy
+colcon build --packages-select libmavconn mavros_msgs mavros mavros_extras \
+  --cmake-args -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release
+source ~/mavros_ws/install/setup.bash   # затем пересборка clover в этом репозитории
+```
+
+`rosdep check` на этих четырёх пакетах уже прогнан, не хватает: **`ros-jazzy-angles`** (обязателен для
+`mavros` и `mavros_extras`: `find_package(angles REQUIRED)`), `ros-jazzy-ament-lint-auto`,
+`ros-jazzy-ament-lint-common`, `ros-jazzy-ament-cmake-google-benchmark` (только тесты, обходится
+`-DBUILD_TESTING=OFF`). `angles` нужно поставить через apt либо склонировать `ros/angles` в то же `src`.
+`ros-jazzy-mavlink` остаётся из apt (2026.8.8). После сборки проверить те же три параметра и топик
+`mavros/setpoint_attitude/attitude`; если применяются, `mavros_params` и его `SKIP` не нужны.
+
+### Камера
+
+- **Контейнер `main_camera_container`** (`component_container_mt`, `thread_num: 2`) вместо
+  `main_camera_nodelet_manager`. В него грузятся камера, `aruco_detect`, `aruco_map`, `optical_flow`,
+  `rectify`.
+- **Контейнер без respawn.** В оригинале менеджер и nodelet-ы перезапускались. В ROS 2 launch не
+  загружает компоненты заново в перезапущенный контейнер, получился бы пустой контейнер. Падение любого
+  компонента останавливает все компоненты до перезапуска launch.
+- **`main_camera:=false`**: `clover.launch.py` сам поднимает пустой `main_camera_container`, если включены
+  `optical_flow` или `aruco` (в ROS 1 загрузчики nodelet-ов без менеджера висели). Так компоненты работают
+  с камерой из другого источника. `aruco.launch.py`, запущенный отдельно, ждёт контейнер (аргумент
+  `container`).
+- **`cv_camera` → `v4l2_camera`** (компонент `v4l2_camera::V4L2Camera`, узел `/main_camera/main_camera`:
+  пространство имён `main_camera`, чтобы `image_raw`, `camera_info` и `set_camera_info` получили те же
+  имена, что в ROS 1). **Не запускалось, имена параметров не сверены с установленным пакетом.**
+  Соответствие: `device_path` → `video_device`, `frame_id` → `camera_frame_id`, `image_width/height` →
+  `image_size: [320, 240]`, `cv_cap_prop_fps: 40` → `time_per_frame: [1, 40]`, `camera_info_url` тот же.
+  **Нет аналогов:** `rate` (частота опроса), `capture_delay: 0.02` (метка времени кадра не сдвигается на
+  задержку захвата, это может влиять на согласование optical flow с гироскопом), `rescale_camera_info`.
+- **`rescale_camera_info`** (аргумент launch, по умолчанию `true`): launch делает временную копию
+  `fisheye_cam.yaml` (640×480), умножая `fx`, `cx` в `K` и `P` на отношение ширин, `fy`, `cy` — на
+  отношение высот, и передаёт её камере. Проверен только пересчёт (`K`: 332.48, 320, 333.18, 240 →
+  166.24, 160, 166.59, 120). Временный файл в `/tmp` не удаляется.
+- **Ожидание устройства.** `waitfile <device> true` запускается отдельным процессом, по его успешному
+  завершении камера загружается в контейнер. Остальные компоненты устройства не ждут. В прогонах без
+  `/dev/video0` процесс ждёт и завершается вместе с launch.
+- **Кадр камеры.** `static_transform_publisher` теперь с именованными аргументами (`--x --y --z --yaw
+  --pitch --roll --frame-id --child-frame-id`), числа те же. Все шесть вариантов сверены по кватерниону
+  в выводе узла с расчётом по yaw/pitch/roll.
+- `camera_markers`: узел `/main_camera/main_camera_markers`, `scale: 3.0`.
+- `topic_tools throttle` (`image_raw` → `image_raw_throttled`, 5 Гц) и `image_proc::RectifyNode`
+  (ремапы `image`, `camera_info`, `image_rect`) — **не запускались**, без пакетов launch печатает
+  предупреждение.
+- Разрешение 320×240 задано константами в `main_camera.launch.py` (в оригинале — в тексте launch).
+
+### aruco, LED, прочее
+
+- `aruco_detect`, `aruco_map`: параметры и ремапы оригинала под именами, которые объявляет порт
+  `aruco_pose` (`cornerRefinementMethod`, `minMarkerPerimeterRate`, `markers.frame_id`,
+  `markers.child_frame_id_prefix`, `length_override.<id>`). Сверено на запущенных компонентах для
+  `placement` = `floor`, `ceiling`, `unknown`, с `aruco_map`, `aruco_vpe`, `disable`.
+- `vpe_publisher`: `~/vpe` → `mavros/vision_pose/pose`, при `aruco_vpe` `~/pose_cov` → `aruco_map/pose` и
+  `frame_id: aruco_map_detected`.
+- `led.launch.py`: узел эффектов называется `led_effect`, как в оригинале; таблица `notify` — в
+  `config/led_notify.yaml`, подключается при `led_notify:=true`. Параметры драйвера `ws281x` записаны как
+  в оригинале, но драйвера нет.
+- **Отсутствующие пакеты не роняют launch**: для `ws281x`, `vl53l1x`, `v4l2_camera`, `topic_tools`,
+  `image_proc`, `web_video_server`, `rosbridge_server`, `tf2_web_republisher` проверяется наличие
+  (`get_package_prefix`), при отсутствии выводится `WARNING: ... package is not installed`.
+- **Веб-пакеты в Jazzy есть в apt** (`ros-jazzy-web-video-server` 3.1.0, `ros-jazzy-rosbridge-server`
+  2.7.1, `ros-jazzy-tf2-web-republisher` 1.0.0), но не установлены, запуск не проверялся. Не сверены:
+  параметры `web_video_server` (`default_stream_type`, `publish_rate`), имя файла
+  `rosbridge_websocket_launch.xml`, имя исполняемого файла `tf2_web_republisher` (launch ищет
+  `tf2_web_republisher`, затем `tf2_web_republisher_node`).
+- `ROSCONSOLE_FORMAT` → `RCUTILS_CONSOLE_OUTPUT_FORMAT='[{severity}] [{time}]: {name}: {message}'`.
+- Аргумент `blocks` убран (`clover_blocks` вне области). `simulator:=true` отключает камеру, `vl53l1x` и
+  `ws281x`, как в оригинале.
+- Кадры `local_frame`/`fcu_frame` в launch не задаются: при `fcu_conn:=none` узлы `simple_offboard`,
+  `vpe_publisher`, `optical_flow` стартуют на 5 с позже и берут `map`/`base_link` с предупреждением.
+- Сверка с оригиналом (запуск `fcu_conn:=udp rc:=true aruco:=true`): сервисы `navigate`,
+  `navigate_global`, `get_telemetry`, `set_position`, `set_velocity`, `set_attitude`, `set_rates`,
+  `set_altitude`, `set_yaw`, `set_yaw_rate`, `land`, `simple_offboard/release`, `vpe_publisher/reset`,
+  `aruco_detect/set_length_override`, `mavros/set_mode`, `mavros/cmd/arming` на месте. Нет:
+  `led/set_effect` (узел `led_effect` ждёт драйвер), `mavros/param/get` (см. выше), сервисов
+  `dynamic_reconfigure`. Узлы: `main_camera_nodelet_manager` → `main_camera_container`,
+  `main_camera` → `/main_camera/main_camera`, новые `mavros_params` и (при наличии `topic_tools`)
+  `rangefinder_relay`.
+
+### Найдено в оригинале, не исправлялось
+
+- `optical_flow` с `roi_rad` и калибровкой без дисторсии (поле зрения меньше `roi_rad`) получает ROI за
+  пределами кадра (`ROI: 33 -7 - 287 247` для 320×240) и падает с `cv::Exception`, унося весь контейнер.
+  С калибровкой `fisheye_cam.yaml` ROI в пределах кадра (`97 57 - 223 183`).
+
 ## Чего нет без драйверов
 
 - **Лента `ws281x`.** Драйвера для ROS 2 нет. Узел `led` без сервиса `led/set_leds` и топика
@@ -373,5 +612,3 @@
 - **Дальномер `vl53l1x`.** Драйвера для ROS 2 нет, топик `rangefinder/range` никто не публикует:
   `selfcheck` всегда сообщает `Rangefinder: no rangefinder data from Raspberry`, а `Vision position estimate`
   не может определить, что дрон стоит на полу.
-
-Будет дополняться на этапе F (`cv_camera`, веб-пакеты).
