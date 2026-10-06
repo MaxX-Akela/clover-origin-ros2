@@ -4,7 +4,7 @@
     <arg name="aruco_vpe" default="false"/>
     <arg name="placement" default="floor"/> <!-- markers placement: floor, ceiling, unknown -->
     <arg name="length" default="0.22"/> <!-- not-in-map markers length, m -->
-    <arg name="map" default="map.txt"/> <!-- markers map file name -->
+    <arg name="map" default="map204.txt"/> <!-- markers map file name -->
 
     <!-- For additional help go to https://clover.coex.tech/aruco -->
 
