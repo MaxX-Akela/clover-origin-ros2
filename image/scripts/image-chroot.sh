@@ -68,14 +68,89 @@ cleanup() {
   exit "$rc"
 }
 
+# Root (p2 of the Ubuntu Raspberry Pi image): /etc/os-release with ID=ubuntu and /etc/cloud.
+# TEMPLATE: check_ubuntu_root <ROOT_DIR>; prints the reason to stdout and returns 1 on failure
+check_ubuntu_root() {
+  local root=$1 osr=
+  if [[ -f $root/etc/os-release ]]; then
+    osr=$root/etc/os-release
+  elif [[ -f $root/usr/lib/os-release ]]; then
+    osr=$root/usr/lib/os-release
+  else
+    echo "no /etc/os-release in the root filesystem"
+    return 1
+  fi
+  if ! grep -Eq '^ID="?ubuntu"?[[:space:]]*$' "$osr"; then
+    echo "$osr does not contain ID=ubuntu"
+    return 1
+  fi
+  if [[ ! -d $root/etc/cloud ]]; then
+    echo "no /etc/cloud in the root filesystem (cloud-init is expected)"
+    return 1
+  fi
+}
+
+# Boot partition (p1, FAT, system-boot): config.txt and cmdline.txt.
+# TEMPLATE: check_pi_boot <BOOT_DIR>
+check_pi_boot() {
+  local boot=$1 f
+  for f in config.txt cmdline.txt; do
+    if [[ ! -f $boot/$f ]]; then
+      echo "no $f in the boot partition"
+      return 1
+    fi
+  done
+}
+
+# What is known about the image, to find out why a check failed. Never fails.
+image_diag() {
+  local img=$1 root=${2:-} boot=${3:-} f
+  {
+    echo "=== diagnostics for $img ==="
+    echo "--- checked: root (p2): /etc/os-release (ID=ubuntu), /etc/cloud; boot (p1): config.txt, cmdline.txt"
+    echo "--- root=${root:-<not mounted>} boot=${boot:-<not mounted>} loop=${LOOPDEV:-<none>}"
+    echo "--- lsblk -f"
+    lsblk -f || true
+    echo "--- losetup -a"
+    losetup -a || true
+    if [[ -n $root && -d $root ]]; then
+      for f in "$root/etc/os-release" "$root/usr/lib/os-release"; do
+        if [[ -f $f ]]; then
+          echo "--- $f"
+          cat "$f" || true
+          break
+        fi
+      done
+      echo "--- ls -la $root"
+      ls -la "$root" || true
+      echo "--- ls -la $root/boot"
+      ls -la "$root/boot" || true
+    fi
+    if [[ -n $boot && -d $boot ]]; then
+      echo "--- ls -la $boot"
+      ls -la "$boot" || true
+    fi
+    echo "=== end of diagnostics ==="
+  } >&2
+}
+
 mount_image() {
-  local img=$1
+  local img=$1 why
   loop_attach "$img"
   ROOT=$(mktemp -d "${CLOVER_MOUNT_BASE:-/mnt}/clover-root.XXXXXX")
-  mount "${LOOPDEV}p2" "$ROOT"
+  mount "${LOOPDEV}p2" "$ROOT" || { image_diag "$img"; die "Could not mount ${LOOPDEV}p2 of $img"; }
   MOUNTED=1
-  [[ -d $ROOT/boot/firmware && -d $ROOT/etc ]] || die "$img does not look like an Ubuntu Raspberry Pi image"
-  mount "${LOOPDEV}p1" "$ROOT/boot/firmware"
+  if ! why=$(check_ubuntu_root "$ROOT"); then
+    image_diag "$img" "$ROOT"
+    die "$img does not look like an Ubuntu Raspberry Pi image: $why"
+  fi
+  # The mount point of the boot partition normally exists in the root filesystem (fstab: /boot/firmware)
+  mkdir -p "$ROOT/boot/firmware"
+  mount "${LOOPDEV}p1" "$ROOT/boot/firmware" || { image_diag "$img" "$ROOT"; die "Could not mount ${LOOPDEV}p1 of $img"; }
+  if ! why=$(check_pi_boot "$ROOT/boot/firmware"); then
+    image_diag "$img" "$ROOT" "$ROOT/boot/firmware"
+    die "$img does not look like an Ubuntu Raspberry Pi image: $why"
+  fi
 
   # rslave: mounts made inside never propagate back to the host
   mount --rbind /dev "$ROOT/dev"

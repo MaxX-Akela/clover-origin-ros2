@@ -49,6 +49,28 @@ chroot_copy() {
   "${SCRIPT_DIR}/scripts/image-chroot.sh" "${GUARD_FLAG[@]}" "$IMAGE_PATH" copy "$@"
 }
 
+# Runs on any exit. Every child script cleans up after itself; this is the last resort:
+# print the state on failure and detach loop devices that still point to the working image.
+cleanup() {
+  local rc=$? dev
+  set +e
+  if [[ $rc -ne 0 ]]; then
+    echo_stamp "Build failed with code ${rc}, state of loop devices and mounts:" ERROR >&2
+    losetup -a >&2
+    mount | grep clover >&2
+    lsblk -f >&2
+  fi
+  if [[ -n ${IMAGE_PATH:-} && -f $IMAGE_PATH ]]; then
+    while IFS=: read -r dev _; do
+      [[ -n $dev ]] || continue
+      echo_stamp "Detaching leftover ${dev}" ERROR >&2
+      grep " $(realpath "${dev}")p" /proc/mounts | awk '{print $2}' | sort -r | xargs -r -n1 umount -l
+      losetup -d "$dev"
+    done < <(losetup -j "$IMAGE_PATH")
+  fi
+  exit "$rc"
+}
+
 image_version() {
   if [[ -n ${CLOVER_IMAGE_VERSION:-} ]]; then
     echo "$CLOVER_IMAGE_VERSION"
@@ -77,6 +99,10 @@ main() {
     GUARD_FLAG=(--i-know)
   fi
   [[ $(uname -m) == aarch64 ]] || die "Native arm64 host is required, this is $(uname -m)"
+
+  trap cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
   local version tool
   for tool in curl xz sha256sum rsync sfdisk losetup unshare truncate numfmt; do

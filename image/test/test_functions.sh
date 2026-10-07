@@ -86,6 +86,38 @@ truncate -s 64M "$imgg"
 printf 'label: gpt\nstart=2048, size=2048\nstart=8192, size=2048\n' | sfdisk --quiet "$imgg"
 expect_fail "check_layout rejects GPT" bash -c "source '${IMAGE_DIR}/scripts/image-resize.sh'; check_layout '$imgg'"
 
+# --- image-chroot.sh: checks of the image layout on fake trees ----------------------------------
+# shellcheck source=../scripts/image-chroot.sh
+source "${IMAGE_DIR}/scripts/image-chroot.sh"
+good="${TMP}/good-root"
+mkdir -p "${good}/etc/cloud" "${good}/usr/lib" "${good}/boot/firmware"
+printf 'PRETTY_NAME="Ubuntu 24.04.5 LTS"\nNAME="Ubuntu"\nID=ubuntu\nID_LIKE=debian\n' > "${good}/usr/lib/os-release"
+ln -s ../usr/lib/os-release "${good}/etc/os-release"
+expect "ubuntu root passes (relative os-release symlink)" check_ubuntu_root "$good"
+# The boot mount point may be absent in p2: this must not matter for the root check
+rm -rf "${good:?}/boot"
+expect "ubuntu root passes without /boot/firmware" check_ubuntu_root "$good"
+bad="${TMP}/debian-root"
+mkdir -p "${bad}/etc/cloud"
+printf 'ID=debian\n' > "${bad}/etc/os-release"
+expect_fail "debian root is rejected" check_ubuntu_root "$bad"
+nocloud="${TMP}/nocloud-root"
+mkdir -p "${nocloud}/etc"
+printf 'ID=ubuntu\n' > "${nocloud}/etc/os-release"
+expect_fail "root without /etc/cloud is rejected" check_ubuntu_root "$nocloud"
+expect_fail "empty root is rejected" check_ubuntu_root "${TMP}"
+expect_fail "wrong ID that merely contains ubuntu is rejected" bash -c "mkdir -p '${TMP}/like/etc/cloud'; printf 'ID=notubuntu\nID_LIKE=ubuntu\n' > '${TMP}/like/etc/os-release'; source '${IMAGE_DIR}/scripts/image-chroot.sh'; check_ubuntu_root '${TMP}/like'"
+goodboot="${TMP}/good-boot"
+mkdir -p "$goodboot"
+touch "${goodboot}/config.txt" "${goodboot}/cmdline.txt"
+expect "pi boot partition passes" check_pi_boot "$goodboot"
+mkdir -p "${TMP}/bad-boot"
+touch "${TMP}/bad-boot/config.txt"
+expect_fail "boot partition without cmdline.txt is rejected" check_pi_boot "${TMP}/bad-boot"
+expect_fail "a root tree is not a boot partition" check_pi_boot "$good"
+expect "image_diag never fails on fake trees" image_diag fake.img "$good" "$goodboot"
+expect "the failure reason is reported" bash -c "source '${IMAGE_DIR}/scripts/image-chroot.sh'; [[ \$(check_ubuntu_root '$bad' || true) == *ID=ubuntu* ]]"
+
 # --- image-hardware.sh: config.txt and cmdline.txt ---------------------------------
 # shellcheck source=../image-hardware.sh
 source "${IMAGE_DIR}/image-hardware.sh"

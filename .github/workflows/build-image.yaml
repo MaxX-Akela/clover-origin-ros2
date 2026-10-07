@@ -85,9 +85,17 @@ jobs:
           fi
           sudo -E image/image-build.sh
 
-      - name: Free space after the build
+      - name: State after the build (diagnostics and cleanup)
         if: always()
-        run: df -h
+        run: |
+          df -h
+          lsblk
+          losetup -a || true
+          mount | grep clover || true
+          # Last resort: nothing of the build may stay attached to the runner
+          for mnt in $(mount | awk '/clover-root/ {print $3}' | sort -r); do sudo umount -l "$mnt" || true; done
+          for dev in $(losetup -j "$PWD"/image/out/images/*.img 2> /dev/null | cut -d: -f1); do sudo losetup -d "$dev" || true; done
+          losetup -a || true
 
       - name: Upload the image
         uses: actions/upload-artifact@v4
