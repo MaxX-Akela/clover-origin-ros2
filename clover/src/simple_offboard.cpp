@@ -76,6 +76,8 @@
 #include <clover/srv/set_rates.hpp>
 #include <clover/msg/state.hpp>
 
+#include "mavros_frames.hpp"
+
 using std::string;
 using std::isnan;
 using namespace geometry_msgs::msg;
@@ -1188,27 +1190,6 @@ void release(const std::shared_ptr<std_srvs::srv::Trigger::Request>, std::shared
 	res->success = true;
 }
 
-// Read frames from the parameters of mavros local_position plugin node
-void readMavrosFrames()
-{
-	local_frame = "map";
-	fcu_frame = "base_link";
-
-	const string plugin = mavros + "/local_position";
-	auto params = std::make_shared<rclcpp::SyncParametersClient>(node, plugin);
-	if (!params->wait_for_service(std::chrono::seconds(5))) {
-		RCLCPP_WARN(node->get_logger(), "can't read frames from %s, using %s and %s",
-		            plugin.c_str(), local_frame.c_str(), fcu_frame.c_str()); // editorconfig-checker-disable-line
-		return;
-	}
-
-	for (auto& param : params->get_parameters({"tf.frame_id", "tf.child_frame_id"}, std::chrono::seconds(5))) {
-		if (param.get_type() != rclcpp::ParameterType::PARAMETER_STRING) continue;
-		if (param.get_name() == "tf.frame_id") local_frame = param.as_string();
-		if (param.get_name() == "tf.child_frame_id") fcu_frame = param.as_string();
-	}
-}
-
 inline rclcpp::Duration durationParam(const string& name, double default_value)
 {
 	return rclcpp::Duration::from_seconds(node->declare_parameter(name, default_value));
@@ -1224,14 +1205,8 @@ void run()
 
 	// Params
 	mavros = node->declare_parameter("mavros", string("mavros")); // for case of using multiple connections
-	local_frame = node->declare_parameter("local_frame", string("")); // read from mavros if empty
-	fcu_frame = node->declare_parameter("fcu_frame", string("")); // read from mavros if empty
-	if (local_frame.empty() || fcu_frame.empty()) {
-		string local_frame_param = local_frame, fcu_frame_param = fcu_frame;
-		readMavrosFrames();
-		if (!local_frame_param.empty()) local_frame = local_frame_param;
-		if (!fcu_frame_param.empty()) fcu_frame = fcu_frame_param;
-	}
+	// local_frame and fcu_frame parameters, read from mavros local_position plugin node if empty
+	clover::readMavrosFrames(node.get(), local_frame, fcu_frame, mavros);
 	target.child_frame_id = node->declare_parameter("target_frame", string("navigate_target"));
 	setpoint.child_frame_id = node->declare_parameter("setpoint", string("setpoint"));
 	auto_release = node->declare_parameter("auto_release", true);

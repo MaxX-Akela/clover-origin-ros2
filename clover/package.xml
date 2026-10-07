@@ -49,6 +49,16 @@
   <exec_depend>web_video_server</exec_depend>
   <exec_depend>rosbridge_server</exec_depend>
   <exec_depend>tf2_web_republisher</exec_depend>
+  <exec_depend>roswww_static</exec_depend>
+
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>launch</test_depend>
+  <test_depend>launch_ros</test_depend>
+  <test_depend>launch_testing</test_depend>
+  <test_depend>launch_testing_ament_cmake</test_depend>
+  <test_depend>launch_testing_ros</test_depend>
+  <test_depend>composition_interfaces</test_depend>
+  <test_depend>tf2_msgs</test_depend>
 
   <exec_depend>rosidl_default_runtime</exec_depend>
   <member_of_group>rosidl_interface_packages</member_of_group>

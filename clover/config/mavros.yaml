@@ -1,6 +1,6 @@
 # Config file for mavros (ROS 2)
 # Based on https://raw.githubusercontent.com/mavlink/mavros/ros2/mavros/launch/px4_config.yaml
-# Values are taken from the ROS 1 version of this file (launch/mavros_config.yaml)
+# Values are taken from the ROS 1 version of this file (launch/mavros_config.yaml, removed from the repository)
 
 # sys_status
 /**/sys:

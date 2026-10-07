@@ -115,7 +115,7 @@
 
 ## Мелкие узлы (этап C)
 
-Проверено сборкой с `-Wall -Wextra` и дымовыми прогонами с mock-издателями (`test/smoke_<узел>.py`),
+Проверено сборкой с `-Wall -Wextra` и дымовыми прогонами с mock-издателями (тогда `test/smoke_<узел>.py`, с этапа G — `test/test_<узел>.py`),
 плюс совпадение издателей и подписчиков с запущенным `mavros_node` без автопилота. С камерой, реальными
 кадрами и автопилотом ничего не проверялось.
 
@@ -124,13 +124,12 @@
 - **Кадры.** `vpe_publisher` и `optical_flow` получают кадры через `src/mavros_frames.hpp` по той же
   схеме, что `simple_offboard`: параметры `local_frame`/`fcu_frame` (**новые**, по умолчанию пустые) →
   узел `mavros/local_position` (`tf.frame_id`, `tf.child_frame_id`, ожидание до 5 с) → `map`/`base_link`
-  с предупреждением. `simple_offboard.cpp` на общий заголовок не переведён (в этап не входил), логика
-  в нём продублирована.
+  с предупреждением. `simple_offboard.cpp` переведён на общий заголовок на этапе G.
 - **QoS.** Подписки на чужие данные (`mavros/*`, `camera_info`, `image_raw`, `~/pose`, `~/pose_cov`) —
   best effort, volatile, глубина 1. Публикации в mavros — reliable, глубина 1. Latched-топики
   (`camera_markers`, `state_latched`) — reliable + transient local.
 - Приватные имена (`~pose`, `~vpe`, `~reset`, `~shift`, `~debug`, ...) остались приватными (`~/...`).
-- Флаги `-Wall -Wextra` заданы только для целей этапа C, а не для всего пакета.
+- Флаги `-Wall -Wextra` с этапа G заданы для всего пакета.
 
 ### `shell`
 
@@ -199,7 +198,7 @@
 
 ## LED (этап D)
 
-Проверено сборкой с `-Wall -Wextra` и дымовым прогоном `test/smoke_led.py` с mock-драйвером
+Проверено сборкой с `-Wall -Wextra` и дымовым прогоном с mock-драйвером (тогда `test/smoke_led.py`, с этапа G — `test/test_led.py`)
 (сервис `led/set_leds`, топик `led/state`), mock `mavros/state`, `mavros/battery` и сообщениями в
 `/rosout`. С настоящей лентой и автопилотом ничего не проверялось, драйвера ленты нет.
 
@@ -377,7 +376,7 @@
 документации и **не запускалось** (отмечено ниже).
 
 Файлы: `launch/*.launch.py`, `config/mavros.yaml`, `config/led_notify.yaml`, `src/mavros_params.py`.
-Старые `launch/*.launch` и `launch/mavros_config.yaml` лежат в репозитории, но не устанавливаются.
+Старые `launch/*.launch` и `launch/mavros_config.yaml` удалены на этапе G.
 
 ### mavros
 
@@ -510,8 +509,15 @@
   (`MODE_FLIX_*`), значит `mavros_msgs` нужно собирать тоже, а `clover` пересобрать поверх; у `mavros`
   новая зависимость `rcl`; `node.launch` получил `respawn`.
 
-**План сборки из исходников (не выполнялся, ждёт решения).** Отдельное рабочее пространство-подложка, чтобы
-не класть чужой код в этот репозиторий:
+**Решение (этап G): mavros из исходников не собираем.** В WSL 3 ГБ памяти, при сборке диск уходит в 100 %.
+Этот пункт этапа F закрыт так: `set_attitude` ждёт mavros 2.16.0 из apt (или сборки в CI), до тех пор на
+2.15.1 он не работает (сервис отвечает успехом, сообщения никто не получает). Узел `mavros_params` и его
+`SKIP` для `use_quaternion` остаются. После появления 2.16.0 проверить три параметра из опыта выше и топик
+`mavros/setpoint_attitude/attitude`; если параметры из `config/mavros.yaml` применяются при запуске,
+`mavros_params` можно убрать. С 2.16.0 ничего не проверялось.
+
+**План сборки из исходников (не выполнялся и выполняться не будет, оставлен для справки).** Отдельное
+рабочее пространство-подложка, чтобы не класть чужой код в этот репозиторий:
 
 ```
 mkdir -p ~/mavros_ws/src && cd ~/mavros_ws/src
@@ -604,6 +610,197 @@ source ~/mavros_ws/install/setup.bash   # затем пересборка clover
 - `optical_flow` с `roi_rad` и калибровкой без дисторсии (поле зрения меньше `roi_rad`) получает ROI за
   пределами кадра (`ROI: 33 -7 - 287 247` для 320×240) и падает с `cv::Exception`, унося весь контейнер.
   С калибровкой `fisheye_cam.yaml` ROI в пределах кадра (`97 57 - 223 183`).
+
+## Тесты, примеры, зачистка (этап G)
+
+Проверено сборкой с `-Wall -Wextra` (0 предупреждений) и `colcon test --packages-select clover`:
+37 тестов, 0 падений, 2 пропуска (11 запусков `launch_testing`, 26 проверок внутри них). На железе и в
+симуляции ничего не проверялось.
+
+### Тесты
+
+- Все тесты — `launch_testing` (`add_launch_test`), общие помощники в `test/clover_test_utils.py`. Тесты
+  идут последовательно (`RUN_SERIAL`) в `ROS_DOMAIN_ID=87`, если переменная не задана снаружи.
+- **`test/offboard.py`**: все проверки оригинала в том же порядке. В оригинальном `offboard.test` две
+  статические трансформации (map→test `10 20 30`, map→test2 `100 200 300`), третья (map→map_flipped) —
+  в `basic.test`; перенесены так же. Без mavros узел ждёт 5 с чтения кадров, поэтому первый вызов ждёт
+  сервис до 30 с. `rospy.wait_for_message` заменён новой подпиской на каждый вызов (для
+  `simple_offboard/state` — transient local).
+- **`test/basic.py`**: запускает `mavros.launch.py` (`fcu_conn:=udp`, без автопилота), `simple_offboard`, `rc`,
+  `shell`, `led_effect`. Отличия от оригинала: узла `visualization` нет в Jazzy; `clover_blocks` вне
+  области — `test_blocks` всегда пропускается; `test_web_video_server` пропускается, если пакет не
+  установлен (здесь не установлен, **тест ни разу не выполнялся**); `tf2_web_republisher`, `throttle`,
+  `rectify` и менеджер nodelet-ов из запуска убраны; добавлен `test_nodes_running` (в оригинале узлы были
+  `required`).
+- **Геоид.** `basic.py` подставляет `GEOGRAPHICLIB_DATA=~/.local/share/GeographicLib`, если переменная
+  пуста и каталог есть. Если геоида нет нигде, mavros не запускается, а `test_state` пропускается с
+  командой установки в причине.
+- **Из smoke-скриптов** в тесты перенесены `shell`, `camera_markers`, `rc`, `vpe_publisher`, `led`,
+  `optical_flow` (`test/test_<узел>.py`), `selfcheck` на mock-данных (`test_selfcheck.py`, пропуск без
+  `pymavlink`) и `clover.launch.py` с `fcu_conn:=none main_camera:=false` (`test_launch.py`). Вторые
+  экземпляры `vpe_publisher` и `optical_flow` (чтение кадров из mavros) работают в своих пространствах имён
+  с `test/mock_local_position.py`.
+- **Остались скриптами** (нужен `mavros_node`, камера): `smoke_selfcheck.py` (режим A) и
+  `smoke_launch.py --mavros/--camera`. `test_selfcheck.py` и `test_launch.py` импортируют из них mock-и и
+  списки.
+- В `test_selfcheck.py` в параллельном режиме отчёты `FCU` и `Preflight status` не сравниваются (гонка
+  оригинала, см. выше).
+- Запрос, отправленный клиентом rclpy сразу после появления сервиса в графе, может потеряться; помощник
+  тестов и `service_proxy` перед каждым вызовом ждут `wait_for_service`.
+- Отдельного smoke-скрипта для `simple_offboard` в репозитории не было; после перевода на
+  `mavros_frames.hpp` узел проверен тестами `offboard.py`, `basic.py`, `examples.py`, `test_launch.py`.
+
+### Примеры и `service_proxy`
+
+- **Новый публичный объект: `clover.service_proxy(name, srv_type, timeout=None, wait_for_service=5.0)`**
+  в `src/clover/__init__.py`, замена `rospy.ServiceProxy`. Возвращает функцию: синхронный вызов, поля
+  запроса — позиционные или именованные аргументы, целые для полей `float` приводятся к `float` (rclpy их
+  не принимает). Сервис недоступен за `wait_for_service` секунд — `RuntimeError`
+  (`service [/navigate] unavailable`), нет ответа за `timeout` — `TimeoutError`; `timeout=None` ждёт
+  бесконечно, как ROS 1. Узел `clover_service_proxy_<pid>` и его executor создаются при первом вызове
+  `service_proxy` под замком, `rclpy.init()` вызывается, только если ещё не вызван. Остановка — через
+  `atexit` (без неё процесс завершался с `terminate called without an active exception`).
+- Имена сервисов разрешаются относительно узла прокси (корневое пространство имён или `__ns` процесса).
+- **Примеры:** `rospy.ServiceProxy` → `service_proxy`, `rospy.init_node` → `rclpy.init()` (плюс
+  `rclpy.create_node` там, где есть подписки), **`rospy.sleep` → `time.sleep`** (время стены, а не ROS:
+  при `use_sim_time` с коэффициентом реального времени ≠ 1 паузы отличаются от ROS 1; в плане было
+  ожидание по часам узла, но у узла, который никто не крутит, время симуляции не идёт).
+- Подписки на изображение и дальномер в примерах — `qos_profile_sensor_data` (совместимо и с reliable, и
+  с best effort издателем). Приватные топики: `~center` → `~/center` и т. д.
+- `red_circle.py`: колбэки `rospy` шли в фоновых потоках до `rospy.spin()`; теперь узел крутится в фоновом
+  потоке, главный ждёт Enter. Методы `image_geometry` переименованы в snake_case (`from_camera_info`,
+  `rectify_point`, `project_pixel_to_3d_ray`; сверено по исходникам 4.1.0, пакет не установлен, **пример
+  не запускался**).
+- `test/examples.py`: компиляция всех девяти примеров; `get_telemetry`, `navigate_wait`, `leds`, `camera`
+  запускаются с узлами пакета и mock-ами (FCU, который мгновенно «прилетает» в setpoint; драйвер ленты;
+  синтетический кадр). `flight`, `flight_marker`, `gps`, `subscriber`, `red_circle` не запускались.
+- Примеры устанавливаются в `share/clover/examples`.
+
+### Зачистка
+
+- grep по `rospy|roscpp|nodelet|catkin|dynamic_reconfigure|ros::|rosrun|roslaunch` в `src/` (кроме
+  `autotest`), `launch/*.py`, `config/`, `CMakeLists.txt`, `package.xml`: остались только комментарии
+  (`ros::names::validate` в `led.cpp`, `ros::spinOnce()` в шапке `simple_offboard.cpp`, `rospy.ServiceProxy`
+  в описании `service_proxy`); скрипт `src/www` удалён.
+- `simple_offboard.cpp` переведён на `clover::readMavrosFrames` из `src/mavros_frames.hpp`, своя копия
+  удалена. Порядок тот же: параметры `local_frame`/`fcu_frame` → mavros (до 5 с) → `map`/`base_link`.
+- `-Wall -Wextra` включены на весь пакет (`add_compile_options`), включая сгенерированный код интерфейсов;
+  полная пересборка предупреждений не дала, код править не пришлось.
+- **`src/camera_stream`**: обёртка над `mjpg_streamer` (`camera_stream <устройство> <порт>`), ROS не
+  использует, на неё никто не ссылается (ни launch, ни CMake), не устанавливается. В ROS 2 её роль
+  выполняет `web_video_server`. Удалена.
+- **`src/www`**: `ROSWWW_DEFAULT=clover rosrun roswww_static update` — генерация статического сайта
+  пакетом `roswww_static`, которого для Jazzy в apt нет. Только ROS 1, не устанавливается, в ROS 2 не
+  работает. Удалён. Веб-часть — отдельный этап, там понадобится замена.
+- `src/autotest` не трогался (в нём остался `rospy`).
+- **Удалены** (с разрешения): `launch/aruco.launch`, `clover.launch`, `led.launch`, `main_camera.launch`,
+  `mavros.launch`, `simulator.launch`, `launch/mavros_config.yaml`; `test/basic.test`, `test/offboard.test`;
+  `test/smoke_shell.py`, `smoke_camera_markers.py`, `smoke_rc.py`, `smoke_vpe_publisher.py`, `smoke_led.py`,
+  `smoke_optical_flow.py` (логика в `test/test_*.py`); `src/camera_stream`, `src/www`. Оригиналы есть в
+  истории git и в `CopterExpress/clover`.
+
+### CI
+
+- `.github/workflows/ci.yml`: контейнер `ros:jazzy`, `rosdep install`, `pymavlink` через pip, геоид,
+  `colcon build` и `colcon test` для `aruco_pose`, `led_msgs`, `clover` с `-DBUILD_TESTING=ON`.
+  **Здесь не запускался и не проверялся** (проверен только синтаксис YAML). В CI `rosdep` поставит
+  `web_video_server`, `topic_tools` и остальные пакеты, которых нет в этом окружении, поэтому там впервые
+  выполнятся `test_web_video_server` и `rangefinder_relay` — возможны падения в непроверенных местах.
+
+## Веб (этап H)
+
+Проверено: `roswww_static` (6 тестов), установка `www` (`test_www.py`), протокол rosbridge с клиентом на
+tornado (`test_web.py`). **Страницы в браузере не открывались**, `viz.js`, `gcs.js`, `topics.js` не
+запускались ни в каком JS-движке.
+
+### Порядок запуска
+
+1. `ros2 launch clover clover.launch.py` (аргументы `rosbridge:=true`, `web_video_server:=true` по
+   умолчанию): `rosbridge_websocket` + `rosapi` на порту 9090, `tf2_web_republisher`, `web_video_server` на 8080.
+2. `ros2 run roswww_static update` — ссылки `~/.ros/www/clover` → `share/clover/www`.
+3. Статический сервер (nginx и т. п., с `follow symlinks`) на `~/.ros/www`; страницы ищут rosbridge на
+   `ws://<host>:9090`, `web_video_server` на `<host>:8080`.
+
+### Установка `www`
+
+- `www` ставится в `share/clover/www` без `CATKIN_IGNORE` и docs; `clover.log` и `clover_version` — симлинки на
+  `/var/log/clover.log` и `/etc/clover_version` (исходные заглушки в репозитории не тронуты).
+  `www/CATKIN_IGNORE` остался в репозитории, не устанавливается.
+- `roswww_static` — новый пакет в корне репозитория (в Jazzy его нет): `update` ищет `www` в
+  `share/<пакет>` через `ament_index_python`.
+
+### Что сверено с установленными пакетами
+
+- Версии: `rosbridge_server` 2.7.1, `tf2_web_republisher` 1.0.0, `web_video_server` 3.1.0.
+- **`tf2_web_republisher` 1.0.0: только action** `/tf2_web_republisher`
+  (`tf2_web_republisher_interfaces/action/TFSubscription`, цель с `source_frames`, `target_frame`,
+  `angular_thres`, `trans_thres`, `rate`; transforms приходят в feedback, результат пустой). Сервиса
+  `republish_tfs` (его ждёт `ROSLIB.TFClient` в режиме без groovyCompatibility) нет, хотя
+  `tf2_web_republisher_interfaces/srv/RepublishTFs` в пакете интерфейсов объявлен. Исполняемый файл —
+  `tf2_web_republisher_node` (в `launch/clover.launch.py` уже так).
+- `rosbridge_server` 2.7.1 умеет `send_action_goal` / `cancel_action_goal` и шлёт `action_feedback`;
+  запуск — `rosbridge_websocket_launch.xml` (в `clover.launch.py` включается через `AnyLaunchDescriptionSource`),
+  вместе с `rosapi`. Типы сообщений в rosbridge — формы ROS 2 (`mavros_msgs/msg/State`), rosapi
+  отвечает так же (проверено: `/rosapi/topics`, `/rosapi/topic_type`).
+- `web_video_server` 3.1.0: страница `/stream_viewer?topic=` есть (обработчик `handle_stream_viewer`),
+  порт по умолчанию 8080, `/stream?topic=`, `/snapshot?topic=`.
+- Имена топиков маркеров на запущенных узлах: `/aruco_detect/visualization`, `/aruco_map/visualization`
+  (узлы из `aruco.launch.py`, оба `MarkerArray`; первый reliable/volatile, второй transient local),
+  `/main_camera/camera_markers` (transient local, `camera_markers` в пространстве имён `main_camera`; сам
+  узел публикует после первого `camera_info`). Совпадают с `viz.js` без правок.
+- Ссылка на описание типа: `https://docs.ros.org/en/jazzy/p/<пакет>/msg/<Тип>.html` (ответ 200;
+  вариант с `/interfaces/msg/` — 404).
+
+### Выбор схемы TF для `viz.js`: вариант А
+
+Вендорный `roslib.js` (ROS 1) не меняется. `ROSLIB.TFClient` с ROS 2 не работает: ждёт сервис
+`/republish_tfs` типа `tf2_web_republisher/RepublishTFs`, а в режиме action ходит к
+`tf2_web_republisher/TFSubscriptionAction` и не обрабатывает `action_feedback` (адаптер сокета их
+отбрасывает).
+
+- **А (выбран):** в `viz.js` класс `TFActionClient` с теми же методами, что использует ROS3D
+  (`subscribe`, `unsubscribe`, `fixedFrame`): шлёт `send_action_goal` в rosbridge, читает `action_feedback`
+  из того же сокета, при смене набора фреймов отменяет цель и шлёт новую, после переподключения шлёт
+  цель заново. Работает на готовом пакете, трафик как в ROS 1 (только изменившиеся фреймы, пороги
+  `angular_thres`/`trans_thres`, 10 Гц), tf считает сервер.
+- Б (подписка на `/tf` и `/tf_static` в браузере) отвергнут: пришлось бы писать в JS буфер tf с поиском по
+  дереву и интерполяцией, получать весь `/tf`, а `/tf_static` приходит один
+  раз, и поздний подписчик зависит от QoS rosbridge. Больше кода и больше мест для ошибок.
+- Цель action не завершается сама (результат пустой), завершается отменой. Что происходит с целью при
+  закрытии вкладки (отмена со стороны rosbridge или нет), не проверялось.
+- Фиксированный фрейм сцены — тот же, что в ROS 1 (`fixedFrame` передаётся в `setScene`).
+
+### Правки страниц
+
+- `topics.js`: сравнение типа `sensor_msgs/msg/Image`, тип разбирается как `pkg/msg/Type`,
+  `/rosdistro` заменён на константу `jazzy` (параметра в ROS 2 нет), время `sec`/`nanosec`.
+- `gcs.js`: типы `mavros_msgs/msg/State`, `mavros_msgs/msg/StatusText`, `sensor_msgs/msg/BatteryState`.
+- `viz.js`: текст ошибки `clover.launch.py`.
+- Вендорные `roslib.js`, `ros3d.js`, `three.min.js`, `eventemitter2.js`, `yaml.js` не менялись.
+
+### Не работает или не проверено
+
+- **`/vehicle_marker` (модель дрона в `viz.html`) не появится.** В ROS 1 его публиковал узел `visualization` из
+  `mavros_extras`; в Jazzy его нет (проверено по `mavros_plugins.xml` и `lib/mavros_extras`). Вариант замены, не
+  реализован: маленький узел на C++/Python, который подписывается на `mavros/local_position/pose` и публикует
+  `MarkerArray` (`MESH_RESOURCE` или набор `CUBE`/`CYLINDER`) в `/vehicle_marker` с `frame_id` фрейма дрона.
+  Меш пришлось бы раздавать с веб-сервера, а не через `package://`.
+- В `index.html` ссылки на `clover_blocks` (пакет не портирован) и Butterfly (веб-терминал, не ставится) оставлены,
+  **обе нерабочие**.
+- **Не проверялось в браузере:** любая страница, ROS3D-сцена, голосовые сообщения `gcs.html`, `console.html`,
+  `aruco_map.html`, отображение маркеров, ссылки на `web_video_server`, работа за nginx.
+- Проверено только протоколом (`test_web.py`): получение сообщений, `rosapi/topics` и `topic_type`, подписка без
+  типа, поздний подписчик на transient local (`mavros/state`, `camera_markers`, `aruco_map/visualization`),
+  action TF (одна цель, отмена, новая цель с двумя фреймами). Подписчик `aruco_detect/visualization` не
+  проверялся (publisher volatile, как в узле); `camera_markers` и `aruco_*` в тесте заменены mock-публикаторами с
+  теми же именами и QoS. `web_video_server` в тесте не запускается (его запуск проверяет `basic.py`).
+- **На железе и в симуляции ничего не проверялось.**
+
+### Найдено в оригинале, не исправлялось
+
+- `gcs.js`: `message.cell_voltage[0].toFixed(2)` падает, если массив `cell_voltage` пустой. Заполняет ли mavros
+  для ROS 2 `cell_voltage` всегда, не проверялось.
+- `viz.js`: при потере соединения сцена не восстанавливается (`ros.on('error')` только показывает alert).
 
 ## Чего нет без драйверов
 

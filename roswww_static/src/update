@@ -1,0 +1,50 @@
+#!/usr/bin/env python3
+
+# Copyright (C) 2020 Copter Express Technologies
+#
+# Author: Oleg Kalachev <okalachev@gmail.com>
+#
+# Distributed under MIT License (available at https://opensource.org/licenses/MIT).
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+
+# TODO: add custom header, footer
+# TODO: symlinks or copy param
+
+import os
+import shutil
+from ament_index_python.packages import get_packages_with_prefixes, get_package_share_directory
+
+
+def get_ros_home():
+    # the same rule as in rospkg: ROS_HOME variable, ~/.ros by default
+    return os.environ.get('ROS_HOME') or os.path.join(os.path.expanduser('~'), '.ros')
+
+
+www = get_ros_home() + '/www'
+index_file = os.environ.get('ROSWWW_INDEX')
+default_package = os.environ.get('ROSWWW_DEFAULT')
+
+print('using www dir: ' + www)
+shutil.rmtree(www, ignore_errors=True)  # reset www directory content
+os.makedirs(www)
+
+packages = sorted(get_packages_with_prefixes())
+
+index = '<h1>Packages list</h1>\n<ul>\n'
+
+for name in packages:
+    path = get_package_share_directory(name)
+    if os.path.exists(path + '/www'):
+        print('found www path for %s package' % name)
+        os.symlink(path + '/www', www + '/' + name)
+        index += '<li><a href="{name}/">{name}</a></li>'.format(name=name)
+
+if default_package is not None:
+    redirect_html = '<meta http-equiv=refresh content="0; url={name}/">'.format(name=default_package)
+    open(www + '/index.html', 'w').write(redirect_html)
+elif index_file is not None:
+    print('symlinking index file')
+    os.symlink(index_file, www + '/index.html')
+else:
+    open(www + '/index.html', 'w').write(index)

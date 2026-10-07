@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    container: ros:jazzy
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src/clover-origin-ros2
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y python3-pip
+          rosdep update --rosdistro jazzy
+          rosdep install -y --from-paths src --ignore-src --rosdistro jazzy
+          # used by selfcheck, not available in rosdep
+          pip install --break-system-packages pymavlink
+
+      - name: Install GeographicLib datasets (mavros_node doesn't start without the geoid)
+        run: /opt/ros/jazzy/lib/mavros/install_geographiclib_datasets.sh
+
+      - name: Build
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon build --packages-select aruco_pose led_msgs roswww_static clover --cmake-args -DBUILD_TESTING=ON
+
+      - name: Test
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          colcon test --packages-select aruco_pose led_msgs roswww_static clover --event-handlers console_direct+ --return-code-on-test-failure
+
+      - name: Test results
+        if: always()
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon test-result --verbose
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: colcon-logs
+          path: |
+            log
+            build/*/test_results

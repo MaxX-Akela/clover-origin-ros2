@@ -1,11 +1,11 @@
 # Information: https://clover.coex.tech/en/simple_offboard.html#gettelemetry
 
-import rospy
-from clover import srv
+import rclpy
+from clover import srv, service_proxy
 
-rospy.init_node('flight')
+rclpy.init()
 
-get_telemetry = rospy.ServiceProxy('get_telemetry', srv.GetTelemetry)
+get_telemetry = service_proxy('get_telemetry', srv.GetTelemetry)
 
 # Print drone's state
 print(get_telemetry())

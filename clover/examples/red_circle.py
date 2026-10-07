@@ -7,39 +7,45 @@
 #   cv/mask (red color mask)
 #   cv/red_circle (position of the center of the red circle in 3D space)
 
-import rospy
+import threading
+import rclpy
+from rclpy.duration import Duration
+from rclpy.qos import qos_profile_sensor_data
+from rclpy.wait_for_message import wait_for_message
 import cv2
 import numpy as np
 from math import nan
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import PointStamped, Point
 from cv_bridge import CvBridge
-from clover import long_callback, srv
+from clover import long_callback, srv, service_proxy
 import tf2_ros
 import tf2_geometry_msgs
 import image_geometry
 
-rospy.init_node('cv', disable_signals=True) # disable signals to allow interrupting with ctrl+c
+rclpy.init()
+node = rclpy.create_node('cv')
 
-get_telemetry = rospy.ServiceProxy('get_telemetry', srv.GetTelemetry)
-set_position = rospy.ServiceProxy('set_position', srv.SetPosition)
+get_telemetry = service_proxy('get_telemetry', srv.GetTelemetry)
+set_position = service_proxy('set_position', srv.SetPosition)
 
 bridge = CvBridge()
 
 tf_buffer = tf2_ros.Buffer()
-tf_listener = tf2_ros.TransformListener(tf_buffer)
+tf_listener = tf2_ros.TransformListener(tf_buffer, node)
 
-mask_pub = rospy.Publisher('~mask', Image, queue_size=1)
-point_pub = rospy.Publisher('~red_circle', PointStamped, queue_size=1)
+mask_pub = node.create_publisher(Image, '~/mask', 1)
+point_pub = node.create_publisher(PointStamped, '~/red_circle', 1)
 
 # read camera info
 camera_model = image_geometry.PinholeCameraModel()
-camera_model.fromCameraInfo(rospy.wait_for_message('main_camera/camera_info', CameraInfo))
+camera_model.from_camera_info(wait_for_message(CameraInfo, node, 'main_camera/camera_info',
+                                               qos_profile=qos_profile_sensor_data)[1])
 
 
 def img_xy_to_point(xy, dist):
-    xy_rect = camera_model.rectifyPoint(xy)
-    ray = camera_model.projectPixelTo3dRay(xy_rect)
+    xy_rect = camera_model.rectify_point(xy)
+    ray = camera_model.project_pixel_to_3d_ray(xy_rect)
     return Point(x=ray[0] * dist, y=ray[1] * dist, z=dist)
 
 def get_center_of_mass(mask):
@@ -63,7 +69,7 @@ def image_callback(msg):
     mask = cv2.bitwise_or(mask1, mask2)
 
     # publish the mask
-    if mask_pub.get_num_connections() > 0:
+    if mask_pub.get_subscription_count() > 0:
         mask_pub.publish(bridge.cv2_to_imgmsg(mask, 'mono8'))
 
     # calculate x and y of the circle
@@ -79,13 +85,16 @@ def image_callback(msg):
 
     if follow_red_circle:
         # follow the target
-        setpoint = tf_buffer.transform(target, 'map', timeout=rospy.Duration(0.2))
+        setpoint = tf_buffer.transform(target, 'map', timeout=Duration(seconds=0.2))
         set_position(x=setpoint.point.x, y=setpoint.point.y, z=nan, yaw=nan, frame_id=setpoint.header.frame_id)
 
 # process each camera frame:
-image_sub = rospy.Subscriber('main_camera/image_raw', Image, image_callback, queue_size=1)
+image_sub = node.create_subscription(Image, 'main_camera/image_raw', image_callback, qos_profile_sensor_data)
 
-rospy.loginfo('Hit enter to follow the red circle')
+# process the callbacks in a background thread, so the main thread can wait for the input
+threading.Thread(target=rclpy.spin, args=(node,), daemon=True).start()
+
+node.get_logger().info('Hit enter to follow the red circle')
 input()
 follow_red_circle = True
-rospy.spin()
+threading.Event().wait()

@@ -5,3 +5,5 @@ package-lock.json
 /log/
 /install/
 /build/
+__pycache__/
+*.pyc

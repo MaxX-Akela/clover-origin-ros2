@@ -7,17 +7,19 @@
 # - computes the average color of it;
 # - prints its name to the console.
 
-import rospy
+import rclpy
+from rclpy.qos import qos_profile_sensor_data
 import cv2
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 from clover import long_callback
 
-rospy.init_node('cv')
+rclpy.init()
+node = rclpy.create_node('cv')
 bridge = CvBridge()
 
 printed_color = None
-center_pub = rospy.Publisher('~center', Image, queue_size=1)
+center_pub = node.create_publisher(Image, '~/center', 1)
 
 def get_color_name(h):
     if h < 15: return 'red'
@@ -56,9 +58,9 @@ def image_callback(msg):
     center_pub.publish(bridge.cv2_to_imgmsg(center, 'bgr8'))
 
 # process every frame:
-image_sub = rospy.Subscriber('main_camera/image_raw', Image, image_callback, queue_size=1)
+image_sub = node.create_subscription(Image, 'main_camera/image_raw', image_callback, qos_profile_sensor_data)
 
 # process 5 frames per second:
-# image_sub = rospy.Subscriber('main_camera/image_raw_throttled', Image, image_callback, queue_size=1)
+# image_sub = node.create_subscription(Image, 'main_camera/image_raw_throttled', image_callback, qos_profile_sensor_data)
 
-rospy.spin()
+rclpy.spin(node)

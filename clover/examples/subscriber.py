@@ -1,15 +1,17 @@
 # Information: https://clover.coex.tech/en/laser.html
 
-import rospy
+import rclpy
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Range
 
-rospy.init_node('process_rangefinder')
+rclpy.init()
+node = rclpy.create_node('process_rangefinder')
 
 def range_callback(msg):
     # Process data from the rangefinder
     print('Rangefinder distance:', msg.range)
 
 # Subscribe to laser rangefinder data
-rospy.Subscriber('rangefinder/range', Range, range_callback)
+node.create_subscription(Range, 'rangefinder/range', range_callback, qos_profile_sensor_data)
 
-rospy.spin()
+rclpy.spin(node)

@@ -31,7 +31,7 @@ var fcuState = {};
 new ROSLIB.Topic({
 	ros: ros,
 	name: '/mavros/state',
-	messageType: 'mavros_msgs/State'
+	messageType: 'mavros_msgs/msg/State'
 }).subscribe(function(msg) {
 	modeEl.innerHTML = msg.mode;
 	if (fcuState.mode != msg.mode) {
@@ -44,7 +44,7 @@ new ROSLIB.Topic({
 new ROSLIB.Topic({
 	ros: ros,
 	name: '/mavros/statustext/recv',
-	messageType: 'mavros_msgs/StatusText'
+	messageType: 'mavros_msgs/msg/StatusText'
 }).subscribe(function(message) {
 	var BLACKLIST = [];
 	if (message.severity <= 4) {
@@ -61,7 +61,7 @@ new ROSLIB.Topic({
 new ROSLIB.Topic({
 	ros: ros,
 	name: '/mavros/battery',
-	messageType: 'sensor_msgs/BatteryState',
+	messageType: 'sensor_msgs/msg/BatteryState',
 	throttle_rate: 5000
 }).subscribe(function(message) {
 	var LOW_BATTERY = 3.8;
