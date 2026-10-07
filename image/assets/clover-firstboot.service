@@ -1,0 +1,13 @@
+[Unit]
+Description=Clover first boot setup (hostname, Wi-Fi access point name)
+After=NetworkManager.service cloud-init.service
+Wants=NetworkManager.service
+ConditionPathExists=!/var/lib/clover/firstboot.done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/clover-firstboot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -505,6 +505,10 @@
   Это вывод из чтения кода, **не проверено**, пока 2.16.0 не собран.
 - **Доступность 2.16.0.** В `rosdistro` (`jazzy/distribution.yaml`) для mavros уже записан релиз `2.16.0-1`,
   в основном apt-репозитории его пока нет (появится со следующей синхронизацией).
+  **Обновление на этапе I (2026-10-07):** `apt-cache policy` в этом окружении (amd64 noble) показывает кандидатов
+  `ros-jazzy-mavros`, `-mavros-extras`, `-mavros-msgs`, `-libmavconn` версии `2.16.0-1noble.20260927...`. Для arm64 это проверяет
+  первый шаг CI (`image/scripts/check-apt-packages.sh`). Локально mavros 2.16.0 не ставился и не запускался, всё сказанное выше
+  про параметры плагинов и `set_attitude` на 2.16.0 по-прежнему не проверено.
 - **Что тянет за собой 2.16.0** (diff 2.15.1..2.16.0): `mavros_msgs/msg/State.msg` получил новые константы
   (`MODE_FLIX_*`), значит `mavros_msgs` нужно собирать тоже, а `clover` пересобрать поверх; у `mavros`
   новая зависимость `rcl`; `node.launch` получил `respawn`.
@@ -809,3 +813,121 @@ tornado (`test_web.py`). **Страницы в браузере не откры�
 - **Дальномер `vl53l1x`.** Драйвера для ROS 2 нет, топик `rangefinder/range` никто не публикует:
   `selfcheck` всегда сообщает `Rangefinder: no rangefinder data from Raspberry`, а `Vision position estimate`
   не может определить, что дрон стоит на полу.
+
+## Образ для Raspberry Pi 4 и Pi 5 (этап I)
+
+Скрипты в `image/`, описание в `image/README.md`. **Образ ни разу не собирался, не запускался на Pi 4 и Pi 5, workflow
+`.github/workflows/build-image.yaml` не запускался.** Проверено статически: `bash -n`, shellcheck (0 замечаний), yamllint, actionlint,
+`systemd-analyze verify` (только ожидаемые замечания о правах файлов на `/mnt/c` и ещё не установленном скрипте),
+`image/test/test_guard.sh` (скрипты отказываются работать вне сборки) и `image/test/test_functions.sh` (чистые функции на временных
+файлах, включая таблицу разделов обычного файла через `sfdisk`). Монтирование, loop-устройства, chroot, `resize2fs` не запускались
+(нет root, и защита от этого стоит намеренно).
+
+### Базовый образ
+
+- `ubuntu-24.04.5-preinstalled-server-arm64+raspi.img.xz` с `cdimage.ubuntu.com/releases/24.04/release/` (curl: 200, 1 368 926 404 байт),
+  SHA256 `b23371a5...4351e` взят из `SHA256SUMS` того же каталога и закреплён в `image/image-build.sh`. Подпись `SHA256SUMS.gpg` не проверяется.
+- Пользователь `pi`/`raspberry` создаётся при сборке (в оригинале он уже был в Raspberry Pi OS), а не cloud-init, потому что в chroot
+  нужны его домашний каталог, `rosdep update`, `colcon build`. В `user-data` он перечислен, `ubuntu` не создаётся. **Поведение cloud-init при уже
+  существующем пользователе не проверялось** (знание, не прогон).
+
+### Расхождения с оригиналом
+
+- **Нет:** `roscore.service`, `ROS_HOSTNAME`/`ROS_IP`, monkey → nginx (`/home/pi/.ros/www`, порт 80; нужен `o+x` на `/home/pi`, выставляется),
+  Butterfly (ссылка в `www/index.html` нерабочая, как записано на этапе H), pigpio/`python3-pigpio`/`rpi_ws281x` (не работают на Pi 5, образ один для обеих
+  моделей), gitbook и документация, Node.js 10, ptvsd (его заменил `debugpy`, никто не использует), pyzbar и `libzbar0` (нужен только `test_qr.py`
+  оригинала), пакет `clever`, `mjpg-streamer` (в noble нет, роль у `web_video_server`), `ntpdate` (есть `systemd-timesyncd`), `rsyslog.conf` и
+  `rsysrot.sh` (остался только `SystemMaxUse=200M` у journald), `/etc/sudoers.d/ros_python_paths` (переменные ROS 1; нужен ли `env_keep` для
+  `AMENT_PREFIX_PATH` и `PYTHONPATH` при `sudo`, не выяснялось). `VL53L1X` из `clover/requirements.txt` в образ не ставится (этап J).
+- **`rc.local` → `clover-firstboot.service`** (oneshot, флаг `/var/lib/clover/firstboot.done`), перезагрузка после него не делается
+  (в оригинале была). Генерация `clover-XXXX` та же по смыслу: 4 цифры.
+- **Монтирование:** `/run` в chroot отдельный tmpfs (host systemd не должен быть доступен), `/dev` и `/sys` через `--rbind` и `--make-rslave`, весь
+  `image-chroot.sh` работает в приватном пространстве имён монтирования (`unshare --mount --propagation private`). Токен `/etc/clover_image_build`
+  и переменная `CLOVER_CHROOT_TOKEN` не дают запустить скрипты изнутри образа на хосте. Это написано по знанию, не по прогону.
+- **Сеть:** NetworkManager вместо dhcpcd/wpa_supplicant/dnsmasq. Профиль `clover-ap` (keyfile): `proto=rsn` (в оригинале WPA и RSN), `band=bg`,
+  канал не задан. **DHCP-пул NetworkManager (режим `shared`) свой, `192.168.11.10..254`, а не `100..200` как в оригинале**: настраивается плохо.
+  Имена `clover`, `coex` заданы через `/etc/NetworkManager/dnsmasq-shared.d/`. Профиль клиентского режима заранее не создаётся (SSID и пароль неизвестны),
+  в README команды `nmcli`. Страна Wi-Fi: `cfg80211.ieee80211_regdom=GB` в `cmdline.txt` вместо `country=GB` в `wpa_supplicant.conf`.
+  `NetworkManager-wait-online` и `systemd-networkd-wait-online` отключены (иначе растёт время загрузки). `clover.local` не появится, как и в оригинале
+  (только `clover-XXXX.local`).
+- `clover.service`: `Restart=on-failure`, `RestartSec=3` (в оригинале перезапуска не было), `fcu_conn` не задан (по умолчанию в нашем launch `usb`, как
+  в оригинале). Окружение берётся из `/etc/clover/ros-env.sh`, тот же файл читает `~/.bashrc`.
+- **RMW:** по умолчанию остаётся `rmw_fastrtps_cpp`, потому что все тесты пакета прогонялись с ним. `rmw_cyclonedds_cpp` ставится, но с `clover` не проверялся.
+  `ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET`, `ROS_DOMAIN_ID` не задаётся.
+- **pymavlink:** `pip install --break-system-packages pymavlink==2.4.49` в `/usr/local` (apt-пакета нет; ROS-модули живут в системном интерпретаторе,
+  поэтому не venv). Версия та, с которой прогонялись тесты на этапе E.
+- **colcon:** `--parallel-workers 1`, `MAKEFLAGS=-j$(nproc/2)`; `--executor sequential` не используется (при одном worker он ничего не меняет).
+- **Тесты в образе:** сборка идёт с `-DBUILD_TESTING=OFF`, поэтому `image-validate.sh` отдельно собирает и тестирует только `roswww_static` во временном
+  каталоге. Полный `colcon test --packages-select clover` в chroot не запускается (нужны mavros_node, DDS, мультикаст), он остаётся в `ci.yml`.
+- `systemd-analyze verify` в `image-validate.sh` только предупреждает (в chroot без systemd как PID 1 поведение не проверялось), остальные проверки ломают сборку.
+- `libcamera`: `ros-jazzy-camera-ros` и `ros-jazzy-libcamera` ставятся, но **собраны ли в них pipelines Raspberry Pi (`rpi/vc4` для Pi 4, `rpi/pisp` для Pi 5), не
+  известно**; `image-validate.sh` ищет строки `vc4` и `pisp` в библиотеках и только предупреждает. CSI-камера не проверялась, по умолчанию в launch остаётся USB.
+- `vcgencmd`: `libraspberrypi-bin` в noble нет (`apt-cache policy` пуст). `selfcheck` на образе печатает info `could not call vcgencmd binary; not a Raspberry
+  Pi?` и проверку питания не делает. Замена (sysfs `hwmon`, `in0_lcrit_alarm`) из памяти, не проверялась и не написана.
+- Не отключались без решения владельца: `snapd` и прочее лишнее в server-образе (влияет на время загрузки, которое замеряет `selfcheck`).
+- Лимиты раннера (диск ~14 ГБ, время сборки 1,5 ч) не проверялись, это оценки.
+
+### UART к полётному контроллеру: источники
+
+Итог для `fcu_conn:=uart` (`/dev/ttyAMA0:921600` в `launch/mavros.launch.py`): **по источникам расхождения нет, на железе не проверено.**
+Для Pi 4 нужен `dtoverlay=disable-bt`, для Pi 5 нужен `dtoverlay=uart0-pi5`; без них `/dev/ttyAMA0` либо занят Bluetooth (Pi 4), либо его на GPIO14/15 нет (Pi 5).
+`/dev/serial0` для FCU не годится: на Pi 5 он указывает на `/dev/ttyAMA10` (отладочный разъём). Launch не менялся. Если на железе имя окажется другим,
+предложение: udev-симлинк `/dev/clover-fcu` или параметр launch (с вопросом к владельцу).
+
+Что прочитано (все 2026-10-07):
+
+1. `raspberrypi/linux`, ветка `rpi-6.12.y`, `arch/arm/boot/dts/overlays/README`: `uart0-pi5`: «Enable uart 0 on GPIOs 14-15. Pi 5 only.»; файл
+   `uart0-pi5-overlay.dts` (`compatible = "brcm,bcm2712"`, цель `&uart0`, `uart0_pins`).
+2. `arch/arm64/boot/dts/broadcom/bcm2712-rpi.dtsi`: `serial0 = &uart0; ... serial10 = &uart10;`, `stdout-path = "serial10:115200n8"`;
+   `bcm2712-rpi-5-b.dts`: `uart10` это отладочный 3-pin разъём. **Что `ttyAMA<N>` берёт номер из алиаса `serialN`, это моё знание драйвера PL011, в источниках
+   не написано.**
+3. Документация Raspberry Pi (`raspberrypi/documentation`, PR #3294, вторичный источник): `/dev/serial0` на Pi 5 указывает на `/dev/ttyAMA10`. Параметр
+   `enable_rp1_uart=1` настраивает вывод **прошивки** на GPIO14/15, не порт ядра, не используется. Поиск по сети по этому вопросу дал противоречивые
+   выдержки (одна говорила, что GPIO14/15 это `ttyAMA10`), поэтому опираюсь на файлы DTS, а не на них.
+4. Pi 4: `bcm2711-rpi-4-b.dts`: `stdout-path = "serial1"` (mini UART), `&uart0` связан с BT-модулем; `disable-bt-overlay.dts`: включает UART0 на GPIO14/15,
+   отключает BT, ставит `serial0` на PL011 (`/soc/serial@7e201000`), `serial1` на mini UART.
+5. Ubuntu: `ubuntu.com/hardware/docs/boards/how-to/special_hardware/rpi-config-txt/` (`config.txt` в `/boot/firmware`, `enable_uart=1` в server-образе);
+   packages.ubuntu.com, noble arm64: `uart0-pi5.dtbo` и `disable-bt.dtbo` в `linux-modules-6.8.0-1004-raspi`.
+
+**Оговорка:** п.1, 2, 4 это дерево ядра Raspberry Pi, а Ubuntu собирает свой `linux-raspi`; алиасы в DTB Ubuntu могли отличаться. Поэтому
+`image-validate.sh` печатает алиасы `serial*` из `bcm2711-rpi-4-b.dtb` и `bcm2712-rpi-5-b.dtb` образа (`dtc -I dtb`) и проверяет наличие обоих `.dtbo`.
+Пример вывода появится только после первой сборки.
+
+### Pi 4 и Pi 5
+
+Один образ, различия в `config.txt` (блок `# clover begin` ... `# clover end` в конце файла, секции `[pi4]` и `[pi5]`) и в `/etc/clover_hw`
+(`/proc/device-tree/model` при первой загрузке). Pi 4 здесь проверить нельзя, Pi 5 тоже.
+
+| Место | Общее | Pi 4 | Pi 5 |
+|---|---|---|---|
+| UART к FCU | `/dev/ttyAMA0`, из `cmdline.txt` убраны `console=serial0|ttyAMA0|ttyAMA10|ttyS0,...`, `serial-getty@ttyAMA0` замаскирован | `dtoverlay=disable-bt` | `dtoverlay=uart0-pi5` |
+| I2C, SPI | `dtparam=i2c_arm=on`, `dtparam=spi=on`, модули `i2c-dev` и `spidev`, группы `i2c`, `spi`, `gpio` | на SoC | на RP1 |
+| Питание | | `vcgencmd` нет (см. выше) | USB ограничен 600 мА без БП 5 А; `usb_max_current_enable=1` оставлен **закомментированным** (на БЭК без PD просадка опаснее) |
+| Лента, дальномер | драйверов нет (этап J) | pigpio бы работал, но не ставится | pigpio и `rpi_ws281x` не работают (RP1) |
+| CSI | `camera-ros` ставится, по умолчанию USB (`v4l2_camera`) | pipeline `rpi/vc4`, шлейф 15 пин | pipeline `rpi/pisp`, шлейф 22 пин |
+
+### Найдено в оригинале `builder/`, не переносилось и не исправлялось
+
+Читалось, не запускалось.
+
+- `image-init.sh` вставляет команду в `/etc/rc.local` по номеру строки (`sed -i "19a..."`): ломается, если файл Raspberry Pi OS изменится.
+- `image-build.sh`, `get_image`: строка `echo_stamp "Downloading complete" "SUCCESS" \` склеивается со следующей `else echo_stamp ...; fi`, `else` становится аргументом
+  команды, ветки `else` нет. Проверено запуском фрагмента: печатается `Downloading complete SUCCESS else echo_stamp ...`, сообщение «already downloaded» не выводится никогда.
+- `hardware_setup.sh`: раздел `/boot` и `root=/dev/mmcblk0p2` прописываются жёстко (не подходит для USB/NVMe-загрузки).
+- `image-software.sh`: ключи apt через `apt-key adv --keyserver` (устарело), в `image-ros.sh` `export ROS_IP='127.0.0.1'` «для тестов».
+- `echo_stamp` во всех скриптах оригинала выводит текст через `echo -e ${TEXT}` без кавычек.
+
+### Этап J (не делался)
+
+- **Драйвер ленты на Pi 4 и Pi 5:** интерфейс ядра `spidev` (одинаков для обеих моделей; не pigpio и не `rpi_ws281x`). Для Pi 4 при SPI нужна
+  правильная частота ядра/SPI, **проверить при реализации**. Контракт: сервис `led/set_leds` (`led_msgs/srv/SetLEDs`), топик `led/state`
+  (`led_msgs/msg/LEDStateArray`), QoS **reliable + transient local, depth 1** (иначе узел `led` не стартует, см. раздел LED), параметры как у `ws281x` в
+  `config/led_notify.yaml` и `launch/led.launch.py`.
+- **`vl53l1x` по I2C** (`/dev/i2c-1`, адрес 0x29, `smbus2`): топик `rangefinder/range` (`sensor_msgs/msg/Range`), QoS best effort, volatile, depth 1
+  (совместимо с `simple_offboard`, `selfcheck`, примерами). `frame_id` и границы дальности как в оригинале `vl53l1x`.
+
+### Что не проверено совсем
+
+Сборка образа целиком, запуск CI, загрузка на Pi 4 и Pi 5, расширение корня, `clover-firstboot`, точка доступа и DHCP, имена `clover`/`coex`, avahi, nginx
+и права, UART/I2C/SPI, имя `/dev/ttyAMA0`, CSI-камера и libcamera, `clover.service` на устройстве, mavros 2.16.0 (в том числе `set_attitude`),
+ветка сборки mavros из исходников, `ros2-apt-source` 1.3.0 в chroot, `systemd-analyze verify` внутри chroot, `rosdep install` на arm64.

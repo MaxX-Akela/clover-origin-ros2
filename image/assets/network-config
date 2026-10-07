@@ -1,0 +1,9 @@
+# NetworkManager manages the network (see image-network.sh); the Wi-Fi access point
+# profile "clover-ap" is a NetworkManager keyfile, not a netplan definition.
+network:
+  version: 2
+  renderer: NetworkManager
+  ethernets:
+    eth0:
+      dhcp4: true
+      optional: true

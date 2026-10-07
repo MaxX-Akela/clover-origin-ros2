@@ -1,0 +1,13 @@
+#cloud-config
+# Clover image: the user "pi" is created while the image is built (image-init.sh),
+# so cloud-init must not create the default "ubuntu" user and must not expire passwords.
+# The hostname is set on the first boot by clover-firstboot.service (clover-XXXX).
+preserve_hostname: true
+manage_etc_hosts: false
+ssh_pwauth: true
+users:
+  - name: pi
+    lock_passwd: false
+    shell: /bin/bash
+chpasswd:
+  expire: false

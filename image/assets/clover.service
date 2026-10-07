@@ -1,0 +1,19 @@
+[Unit]
+Description=Clover ROS 2 package
+After=network.target NetworkManager.service
+
+[Service]
+User=pi
+Environment=HOME=/home/pi
+Environment=RCUTILS_COLORIZED_OUTPUT=0
+ExecStartPre=+/bin/rm -f /var/log/clover.log
+ExecStart=/bin/bash -c ". /etc/clover/ros-env.sh; \
+                      exec stdbuf -o L ros2 launch clover clover.launch.py \
+                      2> >(tee /tmp/clover.err)"
+Restart=on-failure
+RestartSec=3
+StandardOutput=file:/var/log/clover.log
+StandardError=file:/var/log/clover.log
+
+[Install]
+WantedBy=multi-user.target

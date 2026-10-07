@@ -1,0 +1,121 @@
+name: Build image
+
+# Image for Raspberry Pi 4 and Raspberry Pi 5: Ubuntu 24.04 arm64, ROS 2 Jazzy.
+# Native arm64 runner, no Docker, no qemu (see image/README.md). This workflow has not been run yet.
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      image_version:
+        description: Image version for the file name, the short commit hash by default
+        required: false
+        type: string
+      mavros_source:
+        description: Where mavros comes from. auto uses the result of the preflight job
+        required: false
+        type: choice
+        default: auto
+        options:
+          - auto
+          - apt
+          - source
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    # Fast check of the arm64 apt packages before the long image build
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    outputs:
+      mavros_source: ${{ steps.check.outputs.mavros_source }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Static checks and dry-run tests of the image scripts
+        run: |
+          shellcheck image/*.sh image/scripts/*.sh image/test/*.sh image/assets/clover-firstboot.sh
+          image/test/test_guard.sh
+          image/test/test_functions.sh
+
+      - name: Add the ROS 2 apt repository
+        run: sudo --preserve-env=CI image/scripts/install-ros-apt-source.sh
+
+      - name: Check arm64 packages and the version of mavros
+        id: check
+        run: image/scripts/check-apt-packages.sh
+
+  build:
+    needs: preflight
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the pin of the base image
+        id: base
+        run: |
+          sha=$(grep -oP 'SOURCE_IMAGE_SHA256:-"\K[0-9a-f]{64}' image/image-build.sh)
+          echo "sha256=${sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache of the base image
+        uses: actions/cache@v4
+        with:
+          path: image/out/cache
+          key: ubuntu-base-image-${{ steps.base.outputs.sha256 }}
+
+      - name: Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends parted e2fsprogs rsync xz-utils util-linux
+
+      - name: Free space before the build
+        run: df -h
+
+      - name: Build the image
+        env:
+          CLOVER_IMAGE_VERSION: ${{ github.event.release.tag_name || inputs.image_version }}
+          CLOVER_MAVROS_SOURCE: ${{ (inputs.mavros_source != '' && inputs.mavros_source != 'auto') && inputs.mavros_source || needs.preflight.outputs.mavros_source }}
+        run: |
+          if [ -z "${CLOVER_IMAGE_VERSION}" ]; then
+            export CLOVER_IMAGE_VERSION="${GITHUB_SHA::7}"
+          fi
+          sudo -E image/image-build.sh
+
+      - name: Free space after the build
+        if: always()
+        run: df -h
+
+      - name: Upload the image
+        uses: actions/upload-artifact@v4
+        with:
+          name: clover-image
+          path: |
+            image/out/images/*.img.xz
+            image/out/images/*.sha256
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: clover-image
+          path: images
+
+      - name: Attach the image to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            images/*.img.xz
+            images/*.sha256
+          prerelease: true
