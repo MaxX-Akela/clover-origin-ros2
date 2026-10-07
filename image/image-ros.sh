@@ -102,14 +102,18 @@ install_geographiclib_datasets() {
 build_clover() {
   local jobs
   jobs=$(build_jobs)
-  echo_stamp "Build Clover with ${jobs} job(s)"
+  echo_stamp "Build Clover (${CLOVER_COLCON_PACKAGES[*]}) with ${jobs} job(s)"
+  : > "$CLOVER_COLCON_CONSOLE"
+  chown "${USER_NAME}:${USER_NAME}" "$CLOVER_COLCON_CONSOLE"
+  # cohesion: the whole output of a package is printed when it ends, a failure is visible in the CI log
   as_user bash -c "
+    set -o pipefail
     . /etc/clover/ros-env.sh
     cd ${WS_DIR}
     export MAKEFLAGS=-j${jobs} CMAKE_BUILD_PARALLEL_LEVEL=${jobs}
-    colcon build --packages-select aruco_pose led_msgs roswww_static clover \
-      --parallel-workers 1 --symlink-install \
-      --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+    colcon build --packages-select ${CLOVER_COLCON_PACKAGES[*]} \\
+      --parallel-workers 1 --symlink-install --event-handlers console_cohesion+ \\
+      --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF 2>&1 | tee ${CLOVER_COLCON_CONSOLE}
   "
   [[ -f ${WS_DIR}/install/setup.bash ]] || die "colcon build did not produce ${WS_DIR}/install/setup.bash"
 }

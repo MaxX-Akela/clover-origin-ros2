@@ -312,33 +312,115 @@ apt_upgrade() {
   fi
 }
 
+# Packages that the image builds; the same set as in .github/workflows/ci.yml
+CLOVER_COLCON_PACKAGES=(aruco_pose led_msgs roswww_static clover)
+# Console output of colcon build (written by image-ros.sh, read by the failure report)
+CLOVER_COLCON_CONSOLE=/var/tmp/clover-colcon-console.log
+
+# Runs a command as the build user (directly if we are not root, e.g. in the dry-run tests).
+# TEMPLATE: diag_as_user <USER> <COMMAND...>
+diag_as_user() {
+  local user=$1
+  shift
+  if [[ $EUID -eq 0 ]]; then
+    runuser -u "$user" -- env "HOME=$(getent passwd "$user" | cut -d: -f6)" "USER=${user}" "$@"
+  else
+    "$@"
+  fi
+}
+
+# Why did "colcon build" fail: all in the CI log, never fails.
+# TEMPLATE: build_failure_report <WORKSPACE> <USER> <ROS_DISTRO>
+build_failure_report() {
+  local ws=$1 user=$2 distro=$3 latest pkg f shown=0 built=() missing=()
+  set +e
+  echo "--- colcon console (Failed / Summary)"
+  if [[ -f $CLOVER_COLCON_CONSOLE ]]; then
+    grep -E 'Failed +<<<|Aborted +<<<|Summary:|packages? (failed|aborted)|Killed' "$CLOVER_COLCON_CONSOLE"
+  else
+    echo "no ${CLOVER_COLCON_CONSOLE} (colcon was not started or the stage is not image-ros)"
+  fi
+
+  for pkg in "${CLOVER_COLCON_PACKAGES[@]}"; do
+    if [[ -f ${ws}/install/${pkg}/share/ament_index/resource_index/packages/${pkg} ]]; then
+      built+=("$pkg")
+    else
+      missing+=("$pkg")
+    fi
+  done
+  echo "--- installed in ${ws}/install: ${built[*]:-<none>}"
+  echo "--- NOT installed (failed or not reached): ${missing[*]:-<none>}"
+  echo "--- ls ${ws}/install"
+  ls "${ws}/install" 2>&1
+
+  latest=$(readlink -f "${ws}/log/latest_build" 2> /dev/null)
+  if [[ ! -d $latest ]]; then
+    latest=$(find "${ws}/log" -maxdepth 1 -type d -name 'build_*' 2> /dev/null | sort | tail -n 1)
+  fi
+  if [[ -d $latest ]]; then
+    for pkg in "${missing[@]}"; do
+      f="${latest}/${pkg}/stdout_stderr.log"
+      if [[ -f $f ]]; then
+        echo "--- tail -n 80 ${f}"
+        tail -n 80 "$f"
+        shown=1
+      fi
+    done
+    if [[ $shown -eq 0 ]]; then
+      echo "--- no package log, tail -n 80 ${latest}/events.log"
+      tail -n 80 "${latest}/events.log" 2>&1
+    fi
+    echo "--- OOM-killed compiler in the logs (grep Killed)"
+    grep -rl 'Killed' "$latest" --include=stdout_stderr.log --include=stderr.log 2> /dev/null
+  else
+    echo "--- no colcon log in ${ws}/log"
+  fi
+  echo "--- kernel OOM messages (dmesg)"
+  dmesg 2> /dev/null | grep -iE 'out of memory|killed process' | tail -n 5
+
+  if command -v rosdep > /dev/null && [[ -d ${ws}/src ]]; then
+    echo "--- rosdep check --from-paths src --ignore-src --rosdistro ${distro}"
+    diag_as_user "$user" bash -c "[ -f /opt/ros/${distro}/setup.bash ] && . /opt/ros/${distro}/setup.bash; \
+      cd '${ws}' && rosdep check --from-paths src --ignore-src --rosdistro ${distro}" 2>&1
+  fi
+
+  echo "--- versions"
+  cmake --version 2>&1 | head -n 1
+  g++ --version 2>&1 | head -n 1
+  python3 --version 2>&1
+  if command -v ros2 > /dev/null; then
+    echo "ros2: $(ros2 --version 2>&1 | head -n 1)"
+  else
+    echo "ros2: not in PATH (needs setup.bash)"
+  fi
+  echo "--- free -h"
+  free -h
+  echo "--- nproc: $(nproc)"
+  echo "--- df -h"
+  df -h
+  return 0
+}
+
 # EXIT trap of the chroot stages (installed by require_chroot): the state of the image on failure.
 chroot_failure_diag() {
-  local rc=$? ws=/home/pi/ros2_ws f
+  local rc=$? ws=/home/pi/ros2_ws stage
   trap - EXIT
   set +e
   if [[ $rc -ne 0 && $rc -ne $GUARD_EXIT ]]; then
+    stage=$(basename "$0" .sh)
     {
+      echo "BUILD FAILED AT STAGE: ${stage}"
       echo_stamp "FAILED (code ${rc}) in $(basename "$0"), last step: ${CLOVER_LAST_STEP:-<none>}" ERROR
+      build_failure_report "$ws" pi jazzy
       apt_diag
-      echo "--- df -h /"
-      df -h /
       echo "--- tail /var/log/apt/term.log"
       tail -n 40 /var/log/apt/term.log
       echo "--- tail /var/log/dpkg.log"
       tail -n 20 /var/log/dpkg.log
-      if [[ -d ${ws}/log ]]; then
-        echo "--- ls -la ${ws}/log"
-        ls -la "${ws}/log"
-        for f in $(find "${ws}/log/latest_build" -name stderr.log -size +0 2> /dev/null | head -n 5); do
-          echo "--- tail ${f}"
-          tail -n 30 "$f"
-        done
-      fi
-      echo "--- enabled units (systemctl list-unit-files --state=enabled)"
-      systemctl list-unit-files --state=enabled --no-pager
+      echo "--- key units (enabled)"
+      systemctl list-unit-files --state=enabled --no-pager 2>&1 | grep -E '^(NetworkManager|nginx|clover|ssh|avahi)'
       echo "--- journalctl (if the image has a persistent journal)"
-      journalctl -D /var/log/journal --no-pager -n 30
+      journalctl -D /var/log/journal --no-pager -n 20
     } >&2
   fi
   exit "$rc"

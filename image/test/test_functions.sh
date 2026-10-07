@@ -230,6 +230,30 @@ expect_fail "mavros_source: wrong value dies" bash -c "source '${IMAGE_DIR}/imag
 expect "build_jobs: explicit value" eq "$(CLOVER_BUILD_JOBS=3 build_jobs)" 3
 expect "build_jobs: at least 1" bash -c "source '${IMAGE_DIR}/image-ros.sh'; (( \$(CLOVER_BUILD_JOBS= build_jobs) >= 1 ))"
 
+# --- common.sh: failure report of colcon build on a fake workspace ----------------------------------
+ws="${TMP}/ws"
+mkdir -p "${ws}/src" "${ws}/log/build_1/clover" "${ws}/log/build_1/led_msgs"
+ln -s build_1 "${ws}/log/latest_build"
+mkdir -p "${ws}/install/led_msgs/share/ament_index/resource_index/packages"
+touch "${ws}/install/led_msgs/share/ament_index/resource_index/packages/led_msgs"
+seq 1 100 | sed 's/^/line /' > "${ws}/log/build_1/clover/stdout_stderr.log"
+echo 'CMake Error: could not find GeographicLib' >> "${ws}/log/build_1/clover/stdout_stderr.log"
+printf 'Failed   <<< clover [2.1s, exited with code 2]\nSummary: 1 package finished\n  1 package failed: clover\n' > "${TMP}/console.log"
+report="${TMP}/report.txt"
+CLOVER_COLCON_CONSOLE="${TMP}/console.log" build_failure_report "$ws" nobody jazzy > "$report" 2>&1
+expect "report: Failed <<< line" grep -q 'Failed   <<< clover' "$report"
+expect "report: Summary line" grep -q 'Summary: 1 package finished' "$report"
+expect "report: error from the log of the failed package" grep -q 'could not find GeographicLib' "$report"
+expect "report: log is cut to 80 lines" bash -c "! grep -qx 'line 1' '$report' && grep -qx 'line 100' '$report'"
+expect "report: installed packages" grep -q 'installed in .*: led_msgs$' "$report"
+expect "report: missing packages" grep -q 'NOT installed.*: aruco_pose roswww_static clover$' "$report"
+expect "report: versions and resources" grep -q -- '--- nproc' "$report"
+rm -f "${ws}/log/latest_build" "${ws}/log/build_1/clover/stdout_stderr.log"
+printf 'event\n' > "${ws}/log/build_1/events.log"
+CLOVER_COLCON_CONSOLE="${TMP}/none.log" build_failure_report "$ws" nobody jazzy > "$report" 2>&1
+expect "report: falls back to events.log and the newest build_*" grep -q 'tail -n 80 .*build_1/events.log' "$report"
+expect "report: works without a workspace" bash -c "source '${IMAGE_DIR}/scripts/common.sh'; build_failure_report '${TMP}/nowhere' nobody jazzy"
+
 # --- static checks of the assets -------------------------------------------------------------------------
 expect "clover.service name and ExecStart" grep -q 'ros2 launch clover clover.launch.py' "${IMAGE_DIR}/assets/clover.service"
 expect_fail "clover.service does not need roscore" grep -qi roscore "${IMAGE_DIR}/assets/clover.service"
