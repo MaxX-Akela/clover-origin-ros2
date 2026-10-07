@@ -29,6 +29,19 @@ def generate_test_description():
 
 
 class TestArucoPose(ArucoTestCase):
+    # all the outputs are subscribed before the first test, the first message of each of them is kept
+    PRELOAD = (
+        (MarkerArray, 'aruco_detect/markers'),
+        (VisMarkerArray, 'aruco_detect/visualization'),
+        (Image, 'aruco_detect/debug'),
+        (PoseWithCovarianceStamped, 'aruco_map/pose'),
+        (Image, 'aruco_map/debug'),
+        (Image, 'aruco_map/image', LATCHED_QOS),
+        (MarkerArray, 'aruco_map/map', LATCHED_QOS),
+        (VisMarkerArray, 'aruco_map/visualization', LATCHED_QOS),
+    )
+    READY = (MarkerArray, 'aruco_detect/markers')
+
     def test_markers(self):
         markers = self.wait_for(MarkerArray, 'aruco_detect/markers')
         assert len(markers.markers) == 5

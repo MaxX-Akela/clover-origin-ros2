@@ -1,0 +1,99 @@
+name: CI experiment
+
+# TEMPORARY: which environment makes the image-heavy tests (aruco_pose, optical_flow, web) stable in the
+# container of CI. Run by hand; delete this file when the result is moved to ci.yml.
+# Not run yet.
+
+on:
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: How many times to run the tests in every variant
+        required: false
+        default: '5'
+        type: string
+
+jobs:
+  experiment:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ros:jazzy
+      options: ${{ matrix.options }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            options: ''
+            env_line: ''
+          - name: shm-size-1g
+            options: --shm-size=1g
+            env_line: ''
+          - name: fastdds-udpv4
+            options: ''
+            env_line: FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+          - name: fastrtps-async
+            options: ''
+            env_line: RMW_FASTRTPS_PUBLICATION_MODE=ASYNCHRONOUS
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src/clover-origin-ros2
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y python3-pip
+          rosdep update --rosdistro jazzy
+          rosdep install -y --from-paths src --ignore-src --rosdistro jazzy
+          pip install --break-system-packages pymavlink
+
+      - name: Install GeographicLib datasets
+        run: /opt/ros/jazzy/lib/mavros/install_geographiclib_datasets.sh
+
+      - name: Build
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon build --packages-select aruco_pose led_msgs roswww_static clover --cmake-args -DBUILD_TESTING=ON
+
+      - name: Environment of the variant
+        env:
+          ENV_LINE: ${{ matrix.env_line }}
+        run: |
+          if [ -n "$ENV_LINE" ]; then echo "$ENV_LINE" >> "$GITHUB_ENV"; fi
+          echo "variant: ${{ matrix.name }}, env: ${ENV_LINE:-none}"
+          df -h /dev/shm
+          nproc
+
+      - name: Test (repeated, no retries)
+        env:
+          REPEATS: ${{ inputs.repeats }}
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          {
+            echo "### ${{ matrix.name }} (env: ${{ matrix.env_line || 'none' }}, options: ${{ matrix.options || 'none' }})"
+            echo "| run | failed tests |"
+            echo "|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for i in $(seq 1 "${REPEATS:-5}"); do
+            colcon test --packages-select aruco_pose clover --event-handlers console_direct+ > "test_run_$i.txt" 2>&1 || true
+            # without --all only the result files with failures or errors are listed
+            failed=$(colcon test-result 2>&1 | grep -E '\.xml:' | sed 's|.*/||' | tr '\n' ';' || true)
+            summary=$(colcon test-result 2>&1 | tail -n 1)
+            echo "| $i | ${failed:-none} (${summary}) |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.name }}
+          path: |
+            test_run_*.txt
+            log

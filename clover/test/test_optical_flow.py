@@ -4,7 +4,6 @@
 import math
 import os
 import sys
-import time
 
 import launch
 import launch_testing.actions
@@ -48,11 +47,16 @@ class MockCamera:
         self.info_pubs = [node.create_publisher(CameraInfo, ns + 'camera_info', 1) for ns in NAMESPACES]
         rng = np.random.default_rng(1)
         self.frame = np.kron(rng.integers(0, 255, (HEIGHT // 8, WIDTH // 8)), np.ones((8, 8))).astype(np.uint8)
+        self.index = 0  # number of the last published frame
+        self.stamps = {}  # (sec, nanosec) of a published frame -> its number
         node.create_timer(1 / RATE, self.publish)
 
     def publish(self):
         self.frame = np.roll(self.frame, (SHIFT_Y, SHIFT_X), axis=(0, 1))
         stamp = self.node.get_clock().now().to_msg()
+        # the timer can be late (loaded machine), so the tests use the stamps and numbers of the frames, not the rate
+        self.stamps[(stamp.sec, stamp.nanosec)] = self.index + 1
+        self.index += 1
 
         img = Image()
         img.header.stamp = stamp
@@ -98,17 +102,70 @@ class TestOpticalFlow(CloverTestCase):
         self.node.create_subscription(TwistStamped, ns + 'optical_flow/angular_velocity', velos.append, 10)
         return shifts, flows, velos
 
+    @staticmethod
+    def stamp_ns(header):
+        return header.stamp.sec * 10 ** 9 + header.stamp.nanosec
+
+    def frame_number(self, header):
+        """Number of the published frame by the stamp of a message made of it."""
+        return self.camera.stamps.get((header.stamp.sec, header.stamp.nanosec))
+
+    def previous_frame_number(self, flow):
+        """Number of the frame the flow was integrated from.
+
+        integration_time_us is the difference of the stamps of two frames (truncated to microseconds),
+        so stamp - integration_time_us must be the stamp of a published frame."""
+        previous = self.stamp_ns(flow.header) - flow.integration_time_us * 1000
+        for (sec, nanosec), number in list(self.camera.stamps.items()):
+            if abs(sec * 10 ** 9 + nanosec - previous) <= 2000:
+                return number
+        return None
+
+    def frames_integrated(self, flow):
+        """How many frames passed between the two frames of the flow (1 if no frame was lost or skipped)."""
+        current, previous = self.frame_number(flow.header), self.previous_frame_number(flow)
+        return None if current is None or previous is None else current - previous
+
     def check_flow(self, shifts, flows, velos):
-        assert wait(lambda: len(flows) >= 10 and len(shifts) >= 10 and len(velos) >= 10, 15.0), \
+        assert wait(lambda: len(flows) >= 10 and len(shifts) >= 10 and len(velos) >= 10, 30.0), \
             'no flow messages: %d shift, %d flow, %d velocity' % (len(shifts), len(flows), len(velos))
-        shift, flow, velo = shifts[-1], flows[-1], velos[-1]
+
+        # integration_time_us is the exact difference of the stamps of the frames, whatever the load is
+        for flow in list(flows):
+            assert self.previous_frame_number(flow) is not None, \
+                'integration_time_us %d does not match the stamps of the published frames' % flow.integration_time_us
+
+        # the checks of the values need a flow made of two successive frames: under load a frame can be lost
+        # (then the shift is twice as large) and the timer of the camera can be late
+        def last_single_frame_flow():
+            for flow in reversed(list(flows)):
+                if self.frames_integrated(flow) == 1:
+                    return flow
+
+        assert wait(lambda: last_single_frame_flow() is not None, 30.0), \
+            'no flow of two successive frames in %d messages' % len(flows)
+        flow = last_single_frame_flow()
+
+        def with_stamp(messages):
+            found = [m for m in list(messages) if self.stamp_ns(m.header) == self.stamp_ns(flow.header)]
+            return found[0] if found else None
+
+        assert wait(lambda: with_stamp(shifts) is not None and with_stamp(velos) is not None, 5.0), \
+            'no shift or velocity made of the same frame as the flow'
+        shift, velo = with_stamp(shifts), with_stamp(velos)
         assert abs(shift.vector.x - SHIFT_X) < 0.2 and abs(shift.vector.y - SHIFT_Y) < 0.2
         # camera frame coincides with the FCU frame in this run
         assert abs(flow.integrated_x - math.atan2(SHIFT_Y, FOCAL)) < 1e-3
         assert abs(flow.integrated_y + math.atan2(SHIFT_X, FOCAL)) < 1e-3
         assert math.isnan(flow.integrated_xgyro) and flow.distance == -1
-        assert 0.5 / RATE * 1e6 < flow.integration_time_us < 2 / RATE * 1e6
+        # the period of the camera: the median of the flows of successive frames, one late timer does not matter
+        times = sorted(f.integration_time_us for f in list(flows) if self.frames_integrated(f) == 1)
+        assert 0.5 / RATE * 1e6 < times[len(times) // 2] < 2 / RATE * 1e6
         return velo
+
+    def flows_after(self, flows, number):
+        """Flows made of the frames published after the frame with the given number."""
+        return [f for f in list(flows) if (self.frame_number(f.header) or 0) > number]
 
     def test_standalone(self):
         node = self.node
@@ -125,15 +182,17 @@ class TestOpticalFlow(CloverTestCase):
         params = AsyncParameterClient(node, 'optical_flow')
         assert params.wait_for_services(timeout_sec=5.0)
         future = params.set_parameters([Parameter('enabled', value=False)])
-        assert wait(future.done, 5.0) and future.result().results[0].successful
-        time.sleep(0.5)
-        count = len(flows)
-        time.sleep(1.0)
-        assert len(flows) == count, 'flow is published when disabled'
+        assert wait(future.done, 30.0) and future.result().results[0].successful
+        # the frames published before the response may be still in flight, the next ones must give no flow
+        disabled_at = self.camera.index
+        assert wait(lambda: self.camera.index >= disabled_at + 10, 30.0), 'the camera stopped'
+        assert not self.flows_after(flows, disabled_at), 'flow is published when disabled'
 
         future = params.set_parameters([Parameter('enabled', value=True)])
-        assert wait(future.done, 5.0) and future.result().results[0].successful
-        assert wait(lambda: len(flows) > count + 5, 5.0), 'flow is not published when enabled again'
+        assert wait(future.done, 30.0) and future.result().results[0].successful
+        enabled_at = self.camera.index
+        assert wait(lambda: len(self.flows_after(flows, enabled_at)) > 5, 30.0), \
+            'flow is not published when enabled again'
 
     def test_component(self):
         node = self.node
@@ -156,16 +215,24 @@ class TestOpticalFlow(CloverTestCase):
 
         # disable_on_vpe: no flow while visual pose is published
         vpe_pub = node.create_publisher(PoseStamped, 'component/mavros/vision_pose/pose', 1)
+        vpe_stamps = []
 
         def publish():
             vpe = PoseStamped()
             vpe.header.stamp = node.get_clock().now().to_msg()
+            vpe_stamps.append(self.stamp_ns(vpe.header))
             vpe_pub.publish(vpe)
 
         timer = node.create_timer(0.03, publish)
-        time.sleep(0.5)
-        count = len(flows)
-        time.sleep(1.0)
-        assert len(flows) == count, 'flow is published with visual pose'
+        started_at = self.camera.index
+        assert wait(lambda: self.camera.index >= started_at + 30, 60.0), 'the camera stopped'
+        # the node drops a frame if the last visual pose is less than 0.1 s older than the stamp of the frame
+        # (the first frames are skipped: the poses are not delivered yet)
+        for flow in self.flows_after(flows, started_at + 5):
+            stamp = self.stamp_ns(flow.header)
+            previous = [v for v in list(vpe_stamps) if v <= stamp]
+            assert not previous or stamp - max(previous) >= 0.1e9, 'flow is published with visual pose'
         timer.cancel()
-        assert wait(lambda: len(flows) > count + 5, 5.0), 'flow is not published after visual pose is lost'
+        stopped_at = self.camera.index
+        assert wait(lambda: len(self.flows_after(flows, stopped_at + 10)) > 5, 30.0), \
+            'flow is not published after visual pose is lost'

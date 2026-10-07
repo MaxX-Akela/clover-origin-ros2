@@ -9,7 +9,6 @@ import rclpy
 from rclpy.duration import Duration
 from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 from rclpy.time import Time
-from rclpy.wait_for_message import wait_for_message
 import tf2_ros
 
 from launch_ros.actions import ComposableNodeContainer, Node
@@ -17,6 +16,7 @@ from launch_ros.descriptions import ComposableNode
 
 TEST_DIR = os.path.dirname(os.path.abspath(__file__))
 TIMEOUT = 40  # components are loaded asynchronously and best-effort images may be dropped, so be generous
+READY_TIMEOUT = 120  # the first message of the whole pipeline: the components are loaded and the first frame is processed
 
 # QoS of the topics published as "latched" (map, visualization of the map, map image)
 LATCHED_QOS = QoSProfile(depth=1, reliability=QoSReliabilityPolicy.RELIABLE,
@@ -81,23 +81,75 @@ def container(name, nodes):
     )
 
 
+class Waiter:
+    """The first message of a topic (the topics of the tests publish the same data every time)."""
+
+    def __init__(self, node, msg_type, topic, qos):
+        self.node = node
+        self.topic = topic
+        self.message = None
+        self.count = 0
+        self.subscription = node.create_subscription(msg_type, topic, self.callback, qos)
+
+    def callback(self, msg):
+        self.count += 1
+        if self.message is None:
+            self.message = msg
+
+    def release(self):
+        """Unsubscribe when there is a message, large images are not received for nothing."""
+        if self.subscription is not None and self.message is not None:
+            self.node.destroy_subscription(self.subscription)
+            self.subscription = None
+
+
 class ArucoTestCase(unittest.TestCase):
+    # The topics (type, name, QoS) subscribed once before the tests and the topic which shows that
+    # the pipeline works. A subscription of a test is created when it is already running, and the
+    # messages published before it are lost.
+    PRELOAD = ()
+    READY = None
+
     @classmethod
     def setUpClass(cls):
         rclpy.init()
         cls.node = rclpy.create_node('aruco_pose_test')
         cls.tf_buffer = tf2_ros.Buffer()
         cls.tf_listener = tf2_ros.TransformListener(cls.tf_buffer, cls.node, spin_thread=False)
+        cls.waiters = {}
+        for msg_type, topic, *qos in cls.PRELOAD:
+            cls.waiters[topic] = Waiter(cls.node, msg_type, topic, qos[0] if qos else 1)
+        if cls.READY is not None:
+            msg_type, topic = cls.READY
+            cls.waiters.setdefault(topic, Waiter(cls.node, msg_type, topic, 1))
+            # not an error here: the tests report which of the messages they need are missing
+            cls.spin_until(lambda: cls.waiters[topic].message is not None, READY_TIMEOUT)
 
     @classmethod
     def tearDownClass(cls):
         cls.node.destroy_node()
         rclpy.shutdown()
 
+    @classmethod
+    def spin_until(cls, condition, timeout):
+        """Spin the node until the condition, which is checked after every event, or the timeout."""
+        end = time.monotonic() + timeout
+        while not condition() and time.monotonic() < end:
+            rclpy.spin_once(cls.node, timeout_sec=0.1)
+            for waiter in cls.waiters.values():
+                waiter.release()
+        return condition()
+
+    def received(self):
+        return ', '.join('{}: {}'.format(topic, waiter.count) for topic, waiter in sorted(self.waiters.items()))
+
     def wait_for(self, msg_type, topic, qos=1, timeout=TIMEOUT):
-        ok, msg = wait_for_message(msg_type, self.node, topic, qos_profile=qos, time_to_wait=timeout)
-        self.assertTrue(ok, 'no message on {}'.format(topic))
-        return msg
+        waiter = self.waiters.get(topic)
+        if waiter is None or waiter.message is None and waiter.subscription is None:
+            waiter = self.waiters[topic] = Waiter(self.node, msg_type, topic, qos)
+        self.spin_until(lambda: waiter.message is not None, timeout)
+        self.assertIsNotNone(waiter.message, 'no message on {} (messages received: {})'.format(topic, self.received()))
+        return waiter.message
 
     def lookup(self, target, source, timeout=TIMEOUT):
         end = time.monotonic() + timeout

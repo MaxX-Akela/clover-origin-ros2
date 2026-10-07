@@ -15,13 +15,14 @@ import pytest
 from launch.actions import ExecuteProcess, IncludeLaunchDescription
 from launch.launch_description_sources import AnyLaunchDescriptionSource
 from launch_ros.actions import Node
+from rclpy.action import get_action_names_and_types
 from ament_index_python.packages import get_package_share_directory
 from mavros_msgs.msg import State, StatusText
 from sensor_msgs.msg import BatteryState
 from visualization_msgs.msg import Marker, MarkerArray
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from clover_test_utils import CloverTestCase, LATCHED, has_package, static_transform  # noqa: E402
+from clover_test_utils import CloverTestCase, LATCHED, has_package, static_transform, wait  # noqa: E402
 
 PORT = 9191
 HAS_ROSBRIDGE = has_package('rosbridge_server')
@@ -101,9 +102,26 @@ class Client:
             message['type'] = type
         message.update(kwargs)
         self.send(message)
+        return message['id']
 
     async def message(self, topic, timeout=10.0):
         return (await self.receive(lambda m: m.get('op') == 'publish' and m.get('topic') == topic, timeout))['msg']
+
+    async def latched_message(self, topic, type, period=5.0, timeout=60.0):
+        """Subscribe and wait for the message of a latched (transient local) topic.
+
+        rosbridge chooses the QoS of its subscription when it subscribes, by the publishers it has already
+        discovered. On a loaded machine it can know none yet and subscribe as a volatile one, which never gets the
+        message published before, so the subscription is repeated until the message comes."""
+        deadline = time.time() + timeout
+        while True:
+            subscription = self.subscribe(topic, type)
+            try:
+                return await self.message(topic, min(period, max(deadline - time.time(), 0.1)))
+            except AssertionError:
+                if time.time() >= deadline:
+                    raise
+                self.send({'op': 'unsubscribe', 'id': subscription, 'topic': topic})
 
     # what Service.callService does in roslib.js
     async def call_service(self, service, type, args, timeout=10.0):
@@ -156,6 +174,11 @@ class TestWeb(CloverTestCase):
 
         node.create_timer(0.2, periodic)
 
+    def wait_for_action(self, name, timeout=30.0):
+        """Wait for an action server to appear in the graph."""
+        assert wait(lambda: name in dict(get_action_names_and_types(self.node)), timeout, 0.1), \
+            'action {} is not available'.format(name)
+
     def run_client(self, coroutine_function):
         async def main():
             client = Client(asyncio.get_running_loop())
@@ -194,8 +217,18 @@ class TestWeb(CloverTestCase):
         self.run_client(check)
 
     def test_rosapi(self):
+        # rosapi_node starts together with rosbridge: its services may appear after the websocket is available
+        self.wait_for_service('/rosapi/topics', 30.0)
+        self.wait_for_service('/rosapi/topic_type', 30.0)
+
         async def check(client):
-            topics = await client.call_service('/rosapi/topics', 'rosapi/Topics', {})
+            # the topics of the test node are known to rosapi when it has discovered them
+            deadline = time.time() + 30.0
+            while True:
+                topics = await client.call_service('/rosapi/topics', 'rosapi/Topics', {})
+                if {'/mavros/state', '/mavros/battery'} <= set(topics['topics']) or time.time() > deadline:
+                    break
+                await asyncio.sleep(0.2)
             assert len(topics['topics']) == len(topics['types'])
             by_name = dict(zip(topics['topics'], topics['types']))
             assert by_name['/mavros/state'] == 'mavros_msgs/msg/State'
@@ -211,9 +244,7 @@ class TestWeb(CloverTestCase):
     def test_latched_markers(self):
         async def check(client):
             for topic in self.marker_pubs:
-                client.subscribe(topic, 'visualization_msgs/msg/MarkerArray')
-            for topic in self.marker_pubs:
-                markers = await client.message(topic)
+                markers = await client.latched_message(topic, 'visualization_msgs/msg/MarkerArray')
                 assert markers['markers'][0]['header']['frame_id'] == 'test'
 
         self.run_client(check)
@@ -240,6 +271,8 @@ class TestWeb(CloverTestCase):
             transform = [t for t in message['values']['transforms'] if t['child_frame_id'] == frame][0]
             assert transform['header']['frame_id'] == 'map'
             return [transform['transform']['translation'][a] for a in 'xyz']
+
+        self.wait_for_action(action, 30.0)
 
         async def check(client):
             client.send(goal('tf_goal:1', ['test']))
