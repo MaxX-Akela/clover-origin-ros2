@@ -139,6 +139,16 @@ mavros_source=${source} (minimum ${MAVROS_MIN_VERSION})"
     echo "mavros_source=${source}" >> "$GITHUB_OUTPUT"
   fi
 
+  # The image needs noble-updates: without it the -dev libraries of ROS do not match the installed libraries
+  echo "--- candidates of the libraries that failed in the image build"
+  apt-cache policy liblz4-1 liblz4-dev libzstd1 libzstd-dev | grep -E '^[a-z]|Candidate|Installed' || true
+  if ! apt-cache policy | grep -q 'a=noble-updates'; then
+    echo_stamp "noble-updates is not among the apt sources of this system" ERROR >&2
+    failures=$((failures + 1))
+  fi
+  echo "--- simulation: apt-get -s install ros-jazzy-ros-base ros-dev-tools python3-rosdep (informational, state of the runner)"
+  apt-get -s install ros-jazzy-ros-base ros-dev-tools python3-rosdep | tail -n 15 || echo_stamp "the simulation failed on this system" ERROR >&2
+
   if [[ $arch != arm64 ]]; then
     echo_stamp "Architecture is ${arch}, not arm64: the candidates above are not the arm64 ones" ERROR >&2
   fi

@@ -118,6 +118,47 @@ expect_fail "a root tree is not a boot partition" check_pi_boot "$good"
 expect "image_diag never fails on fake trees" image_diag fake.img "$good" "$goodboot"
 expect "the failure reason is reported" bash -c "source '${IMAGE_DIR}/scripts/image-chroot.sh'; [[ \$(check_ubuntu_root '$bad' || true) == *ID=ubuntu* ]]"
 
+# --- common.sh: apt sources of the image ------------------------------------------------------------
+# The Ubuntu Raspberry Pi image as it was seen in CI: noble and noble-security, no noble-updates
+src_d="${TMP}/sources.d"
+mkdir -p "$src_d"
+cat > "${src_d}/ubuntu.sources" << 'SRC'
+Types: deb
+URIs: http://ports.ubuntu.com/ubuntu-ports/
+Suites: noble
+Components: main restricted universe multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+Types: deb
+URIs: http://ports.ubuntu.com/ubuntu-ports/
+Suites: noble-security
+Components: main restricted universe multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+SRC
+: > "${TMP}/sources.list"
+expect_fail "suite_configured: noble-updates is absent" suite_configured noble-updates "${src_d}/ubuntu.sources" "${TMP}/sources.list"
+expect "suite_configured: noble-security is present" suite_configured noble-security "${src_d}/ubuntu.sources"
+expect_fail "suite_configured: noble is not noble-security" suite_configured noble-sec "${src_d}/ubuntu.sources"
+expect "ensure_ubuntu_suites runs" ensure_ubuntu_suites "$src_d" "${TMP}/sources.list" noble
+expect "ensure_ubuntu_suites: noble-updates is configured" suite_configured noble-updates "${src_d}/ubuntu.sources" "${TMP}/sources.list"
+expect "ensure_ubuntu_suites: noble-updates added to the noble stanza" grep -qx 'Suites: noble noble-updates' "${src_d}/ubuntu.sources"
+expect "ensure_ubuntu_suites: security stanza untouched" grep -qx 'Suites: noble-security' "${src_d}/ubuntu.sources"
+expect "ensure_ubuntu_suites: no extra file needed" test ! -e "${src_d}/clover-ubuntu-suites.sources"
+cp "${src_d}/ubuntu.sources" "${TMP}/ubuntu.sources.1"
+ensure_ubuntu_suites "$src_d" "${TMP}/sources.list" noble > /dev/null
+expect "ensure_ubuntu_suites is idempotent" cmp "${src_d}/ubuntu.sources" "${TMP}/ubuntu.sources.1"
+# Only the one-line list with noble: the missing suites go to a separate file with the ports mirror
+src_d2="${TMP}/sources2.d"
+mkdir -p "$src_d2"
+printf 'deb http://ports.ubuntu.com/ubuntu-ports noble main restricted\n' > "${TMP}/sources2.list"
+ensure_ubuntu_suites "$src_d2" "${TMP}/sources2.list" noble > /dev/null
+expect "fallback file has noble-updates and noble-security" grep -qx 'Suites: noble-updates noble-security' "${src_d2}/clover-ubuntu-suites.sources"
+expect "fallback file uses ports.ubuntu.com/ubuntu-ports" grep -qx 'URIs: http://ports.ubuntu.com/ubuntu-ports' "${src_d2}/clover-ubuntu-suites.sources"
+src_d3="${TMP}/sources3.d"
+mkdir -p "$src_d3"
+: > "${TMP}/sources3.list"
+expect_fail "ensure_ubuntu_suites dies without the base suite" bash -c "source '${IMAGE_DIR}/scripts/common.sh'; ensure_ubuntu_suites '$src_d3' '${TMP}/sources3.list' noble"
+
 # --- image-hardware.sh: config.txt and cmdline.txt ---------------------------------
 # shellcheck source=../image-hardware.sh
 source "${IMAGE_DIR}/image-hardware.sh"

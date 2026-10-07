@@ -1019,3 +1019,23 @@ tornado (`test_web.py`). **Страницы в браузере не откры�
 в `ros-env.sh` (там нет ограничения `/dev/shm` в 64 МБ и больше ядер, так что эффект на образе может быть другим); камера (`v4l2_camera`) и `aruco_pose` на устройстве
 работают в одном контейнере компонентов (`main_camera_container`), то есть через DDS идут только картинки к внешним подписчикам (`web_video_server`, `rviz`). По умолчанию
 оставить `rmw_fastrtps_cpp` без дополнительных переменных до измерений на железе.
+
+### apt в образе: noble-updates и обновление перед ROS
+
+Первый реальный прогон дошёл до `apt-get install ros-jazzy-ros-base` и упал: `liblz4-dev` и `libzstd-dev` требуют `liblz4-1`/`libzstd1`
+ровно версии `...build1`, а в образе стоят `...build1.1` (из `noble-updates`). В выводе `apt update` внутри chroot были только `noble` и
+`noble-security`. Наши скрипты источники apt нигде не меняют, значит такой набор источников (скорее всего) пришёл из базового образа;
+сам `ubuntu.sources` из образа в логе не видели, это вывод по логу `apt update`, а не по файлу.
+
+Что сделано (не проверено на реальном образе, только dry-run тестами на фиктивных `ubuntu.sources`):
+- `ensure_ubuntu_suites` (`image/scripts/common.sh`) в начале `image-software.sh`: если `noble-updates` нигде не настроен, дописывает его в stanza
+  с `noble`; недостающие `noble-updates`/`noble-security` иначе кладёт в `/etc/apt/sources.list.d/clover-ubuntu-suites.sources` (зеркало
+  `ports.ubuntu.com/ubuntu-ports`). `noble-backports` не добавляется.
+- `apt_upgrade`: `apt-get update` и `upgrade` перед установкой ROS (в `image-software.sh` и ещё раз в `image-ros.sh`). Пакеты `linux-*` на время
+  обновления ставятся на `apt-mark hold` (ядро, initramfs и flash-kernel в chroot не трогаем), потом hold снимается. Это решение «на всякий случай»:
+  как себя ведут хуки `linux-raspi`/`flash-kernel` в chroot, не проверялось. `CLOVER_APT_DIST_UPGRADE=1` переключает на `dist-upgrade`.
+  Список изменённых пакетов печатается в лог.
+- Диагностика: `apt_diag` (источники, `apt-cache policy`, hold, `apt-get check`, `dpkg --audit`) в начале стадий apt и при ошибках;
+  `chroot_failure_diag` как EXIT-trap всех chroot-стадий (последний шаг, apt, логи dpkg, `ros2_ws/log`, units, journal).
+- `check-apt-packages.sh` (preflight): печатает кандидатов `liblz4-*`/`libzstd-*`, считает ошибкой отсутствие `noble-updates` на раннере и
+  показывает `apt-get -s install ros-base` (информационно: это состояние раннера, а не образа, ошибку исходного вида он не воспроизводит).

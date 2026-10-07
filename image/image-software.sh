@@ -71,8 +71,12 @@ main() {
   echo_stamp "Increase apt retries"
   echo 'APT::Acquire::Retries "3";' > /etc/apt/apt.conf.d/80-retries
 
-  echo_stamp "Update apt cache"
-  retry apt-get update
+  echo_stamp "apt sources of the image"
+  apt_diag liblz4-1 liblz4-dev libzstd1 libzstd-dev
+  ensure_ubuntu_suites /etc/apt/sources.list.d /etc/apt/sources.list noble
+  echo_stamp "Update and upgrade (the packages of the image are older than the archive)"
+  apt_upgrade
+  apt-cache policy liblz4-1 liblz4-dev libzstd1 libzstd-dev
 
   echo_stamp "Software installing"
   retry apt-get install -y --no-install-recommends "${PACKAGES[@]}"

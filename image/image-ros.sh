@@ -122,8 +122,12 @@ main() {
   echo_stamp "Install the ROS 2 apt repository"
   "${SCRIPT_DIR}/scripts/install-ros-apt-source.sh"
 
+  echo_stamp "apt state before the installation of ROS 2"
+  apt_diag liblz4-1 liblz4-dev libzstd1 libzstd-dev "ros-${ROS_DISTRO}-ros-base"
+  apt_upgrade
+
   echo_stamp "Install ROS 2 ${ROS_DISTRO}"
-  retry apt-get install -y --no-install-recommends "ros-${ROS_DISTRO}-ros-base" ros-dev-tools python3-rosdep
+  retry apt-get install -y --no-install-recommends "ros-${ROS_DISTRO}-ros-base" ros-dev-tools python3-rosdep     || { apt_diag liblz4-1 liblz4-dev libzstd1 libzstd-dev; die "Installation of ROS 2 ${ROS_DISTRO} failed"; }
 
   echo_stamp "Environment of ROS 2"
   mkdir -p /etc/clover
