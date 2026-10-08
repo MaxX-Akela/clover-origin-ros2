@@ -2,14 +2,17 @@
 id=clover-ap
 uuid=7b0b3c0e-5d0a-4a8e-9a43-6a1f0c2f7d11
 type=wifi
-interface-name=wlan0
 autoconnect=true
 autoconnect-priority=100
+# 0 = retry forever (default is 4 attempts, then NetworkManager gives up until reboot)
+autoconnect-retries=0
 
 [wifi]
 mode=ap
 ssid=clover-0000
 band=bg
+# 2.4 GHz channel 6 is allowed in every regulatory domain including the world one (00)
+channel=6
 
 [wifi-security]
 key-mgmt=wpa-psk

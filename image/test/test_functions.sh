@@ -254,6 +254,46 @@ expect "AP keyfile: mode 600" eq "$(stat -c %a "${TMP}/ap.nmconnection")" 600
 # shellcheck source=../image-validate.sh
 source "${IMAGE_DIR}/image-validate.sh"
 expect "AP keyfile passes the check" check_ap_profile "${TMP}/ap.nmconnection"
+expect "AP keyfile: 2.4 GHz band with a channel, no interface name" check_ap_profile_radio "${TMP}/ap.nmconnection"
+sed 's/^channel=.*/channel=36/' "${TMP}/ap.nmconnection" > "${TMP}/ap5.nmconnection"
+expect_fail "AP keyfile with channel 36 is rejected" check_ap_profile_radio "${TMP}/ap5.nmconnection"
+sed 's/^band=bg/band=a/' "${TMP}/ap.nmconnection" > "${TMP}/apa.nmconnection"
+expect_fail "AP keyfile with band a is rejected" check_ap_profile_radio "${TMP}/apa.nmconnection"
+sed 's/^\[connection\]/[connection]\ninterface-name=wlan0/' "${TMP}/ap.nmconnection" > "${TMP}/apif.nmconnection"
+expect_fail "AP keyfile pinned to an interface name is rejected" check_ap_profile_radio "${TMP}/apif.nmconnection"
+sed 's/^autoconnect=true/autoconnect=false/' "${TMP}/ap.nmconnection" > "${TMP}/apna.nmconnection"
+expect_fail "AP keyfile without autoconnect is rejected" check_ap_profile_radio "${TMP}/apna.nmconnection"
+
+printf 'console=tty1 root=LABEL=writable cfg80211.ieee80211_regdom=GB rootwait\n' > "${TMP}/cmd-ok.txt"
+printf 'console=tty1 root=LABEL=writable rootwait\n' > "${TMP}/cmd-no.txt"
+printf 'console=tty1 cfg80211.ieee80211_regdom= rootwait\n' > "${TMP}/cmd-empty.txt"
+expect "regdom: found in cmdline" check_wifi_regdom "${TMP}/cmd-ok.txt"
+expect_fail "regdom: missing" check_wifi_regdom "${TMP}/cmd-no.txt"
+expect_fail "regdom: empty" check_wifi_regdom "${TMP}/cmd-empty.txt"
+expect "firstboot: cmdline_regdom reads the domain" eq "$(cmdline_regdom "${TMP}/cmd-ok.txt")" GB
+expect_fail "firstboot: cmdline_regdom without the domain" cmdline_regdom "${TMP}/cmd-no.txt"
+
+mkdir -p "${TMP}/nmroot/etc/NetworkManager/conf.d" "${TMP}/nmroot/etc/netplan" "${TMP}/nmroot/var/lib/systemd/rfkill"
+printf '[connection]\nwifi.powersave=2\n' > "${TMP}/nmroot/etc/NetworkManager/conf.d/90-clover.conf"
+printf 'network:\n  version: 2\n  renderer: NetworkManager\n' > "${TMP}/nmroot/etc/netplan/90-clover.yaml"
+expect "wlan0 managed: clean root passes" check_wlan_managed "${TMP}/nmroot"
+printf '[keyfile]\nunmanaged-devices=interface-name:wlan0\n' > "${TMP}/nmroot/etc/NetworkManager/conf.d/99-bad.conf"
+expect_fail "wlan0 managed: unmanaged-devices is rejected" check_wlan_managed "${TMP}/nmroot"
+rm "${TMP}/nmroot/etc/NetworkManager/conf.d/99-bad.conf"
+printf 'network:\n  version: 2\n  wifis:\n    wlan0: {}\n' > "${TMP}/nmroot/etc/netplan/50-cloud-init.yaml"
+expect_fail "wlan0 managed: netplan wifis is rejected" check_wlan_managed "${TMP}/nmroot"
+rm "${TMP}/nmroot/etc/netplan/50-cloud-init.yaml"
+echo 0 > "${TMP}/nmroot/var/lib/systemd/rfkill/platform-soc:wifi:wlan"
+expect "rfkill: saved state 0 passes" check_no_saved_rfkill_block "${TMP}/nmroot"
+echo 1 > "${TMP}/nmroot/var/lib/systemd/rfkill/platform-soc:wifi:wlan"
+expect_fail "rfkill: saved block is rejected" check_no_saved_rfkill_block "${TMP}/nmroot"
+
+cp "${IMAGE_DIR}/assets/clover-firstboot.sh" "${TMP}/firstboot"
+chmod 755 "${TMP}/firstboot"
+expect "firstboot script unblocks Wi-Fi, sets the domain, brings the profile up" check_firstboot_script "${TMP}/firstboot"
+grep -v 'rfkill unblock wifi' "${IMAGE_DIR}/assets/clover-firstboot.sh" > "${TMP}/firstboot-bad"
+chmod 755 "${TMP}/firstboot-bad"
+expect_fail "firstboot script without rfkill unblock is rejected" check_firstboot_script "${TMP}/firstboot-bad"
 
 # --- image-ros.sh ----------------------------------------------------------------------------------
 # shellcheck source=../image-ros.sh

@@ -50,6 +50,9 @@ sudo -E image/image-build.sh            # в CI (CI=true), нативный arm6
   (`pi4`, `pi5`, `unknown`).
 - Wi-Fi: NetworkManager, точка доступа `clover-XXXX`, пароль `cloverwifi`, `192.168.11.1/24`, DHCP от NetworkManager,
   имена `clover` и `coex` в DNS точки доступа, avahi (`clover-XXXX.local`). Клиентский режим (точку доступа придётся выключить,
+  `wlan0` один). Точка доступа работает на 2,4 ГГц, канал 6, и не зависит от страны. DHCP/DNS даёт dnsmasq из пакета `dnsmasq-base`
+  (его запускает сам NetworkManager). Если точка не поднялась, диагностика первой загрузки в `journalctl -u clover-firstboot`:
+  rfkill, `iw reg get`, состояние NetworkManager, порты 53/67.
   `wlan0` один):
 
   ```

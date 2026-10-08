@@ -51,6 +51,10 @@ ROS_PACKAGES=(
 
 UBUNTU_PACKAGES=(
   network-manager
+  dnsmasq-base
+  nftables
+  iw
+  rfkill
   wireless-regdb
   avahi-daemon
   libnss-mdns

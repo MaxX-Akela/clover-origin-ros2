@@ -21,6 +21,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/common.sh
 source "${SCRIPT_DIR}/scripts/common.sh"
 
+# shellcheck source=image-network.sh
+source "${SCRIPT_DIR}/image-network.sh"
+
 USER_NAME=pi
 USER_HOME="/home/${USER_NAME}"
 BOOT_DIR=/boot/firmware
@@ -165,6 +168,77 @@ assert c['ipv4']['address1'] == '192.168.11.1/24'
 EOF
 }
 
+# TEMPLATE: check_ap_profile_radio [FILE]; the profile must not depend on the country: 2.4 GHz with a channel
+check_ap_profile_radio() {
+  local file=${1:-/etc/NetworkManager/system-connections/clover-ap.nmconnection}
+  python3 - "$file" << 'PYEND'
+import configparser
+import sys
+
+c = configparser.ConfigParser(interpolation=None)
+c.read(sys.argv[1])
+assert c['connection']['id'] == 'clover-ap'
+assert c['connection']['type'] == 'wifi'
+assert c['connection']['autoconnect'] == 'true'
+assert c['connection']['uuid']
+assert c['wifi']['band'] == 'bg', 'band must be bg (2.4 GHz)'
+assert 1 <= int(c['wifi']['channel']) <= 11, 'channel 1..11 is allowed in every regulatory domain'
+assert c['wifi'].get('ssid')
+# a fixed interface name would break the profile if the interface is not wlan0 (wlP..., wlx...)
+assert 'interface-name' not in c['connection'], 'interface-name pins the profile to one device name'
+PYEND
+}
+
+# TEMPLATE: check_wifi_regdom [CMDLINE_FILE]; a non-empty regulatory domain (two letters or 00)
+check_wifi_regdom() {
+  local cmdline=${1:-${BOOT_DIR}/cmdline.txt}
+  grep -Eq '(^| )cfg80211\.ieee80211_regdom=([A-Z]{2}|00)( |$)' "$cmdline"
+}
+
+# TEMPLATE: check_wlan_managed [ROOT]; nothing makes NetworkManager ignore wlan0 / Wi-Fi, nothing renders it elsewhere
+check_wlan_managed() {
+  local root=${1:-} found
+  found=$(grep -rsE 'unmanaged-devices|^[[:space:]]*wifis:|wlan0' \
+    "${root}/etc/NetworkManager/conf.d" "${root}/usr/lib/NetworkManager/conf.d" "${root}/etc/NetworkManager/NetworkManager.conf" \
+    "${root}/etc/netplan" "${root}/etc/cloud/cloud.cfg.d" "${root}/boot/firmware/network-config" "${root}/boot/firmware/user-data" \
+    | grep -vE ':[[:space:]]*#' | grep -vE 'unmanaged-devices=none[[:space:]]*$' || true)
+  if [[ -n $found ]]; then
+    echo "Wi-Fi is configured or disabled outside of the clover-ap profile:"
+    echo "$found"
+    return 1
+  fi
+}
+
+# TEMPLATE: check_no_saved_rfkill_block [ROOT]; systemd-rfkill restores the saved state (1 = blocked)
+check_no_saved_rfkill_block() {
+  local root=${1:-} f
+  for f in "${root}"/var/lib/systemd/rfkill/*; do
+    [[ -e $f ]] || continue
+    [[ $(< "$f") == 0 ]] || { echo "saved rfkill state ${f} = $(< "$f") (blocked)"; return 1; }
+  done
+}
+
+# TEMPLATE: check_firstboot_script [FILE]; the first boot unblocks the radio, sets the domain and brings the profile up
+check_firstboot_script() {
+  local file=${1:-/usr/local/sbin/clover-firstboot}
+  [[ -x $file ]] || return 1
+  grep -q 'rfkill unblock wifi' "$file" && grep -q 'iw reg set' "$file" && grep -q 'nmcli connection up clover-ap' "$file"
+}
+
+check_ap_prerequisites() {
+  # NetworkManager starts dnsmasq itself for ipv4.method=shared; the system dnsmasq.service would take port 53
+  command -v dnsmasq > /dev/null || { echo "dnsmasq (package dnsmasq-base) is missing"; return 1; }
+  command -v rfkill > /dev/null || { echo "rfkill is missing"; return 1; }
+  command -v iw > /dev/null || { echo "iw is missing"; return 1; }
+  [[ -f /usr/sbin/wpa_supplicant ]] || { echo "wpa_supplicant is missing"; return 1; }
+  [[ -f /usr/share/wireless-regdb/regulatory.db || -f /lib/firmware/regulatory.db ]] || { echo "regulatory.db is missing (wireless-regdb)"; return 1; }
+  ! systemctl is-enabled dnsmasq.service 2> /dev/null | grep -qx enabled
+}
+
+diag_network() {
+  show_network_state
+}
+
 check_boot_files() {
   local cmdline=${BOOT_DIR}/cmdline.txt config=${BOOT_DIR}/config.txt
   [[ $(wc -l < "$cmdline") -eq 1 ]] || return 1
@@ -251,6 +325,12 @@ main() {
   warn_check "systemd-analyze verify of the units" systemd-analyze verify /etc/systemd/system/clover.service /etc/systemd/system/clover-firstboot.service
   check "nginx -t" nginx -t
   check "Wi-Fi access point profile" check_ap_profile
+  check "access point profile: autoconnect, 2.4 GHz (bg) with a channel, no fixed interface name" check_ap_profile_radio
+  CHECK_DIAG=diag_network check "access point prerequisites (dnsmasq, rfkill, iw, wpa_supplicant, regulatory.db, no system dnsmasq.service)" check_ap_prerequisites
+  check "Wi-Fi regulatory domain in cmdline.txt" check_wifi_regdom
+  CHECK_DIAG=diag_network check "wlan0 is not disabled or unmanaged by NetworkManager, netplan or cloud-init" check_wlan_managed
+  check "no saved rfkill block" check_no_saved_rfkill_block
+  check "clover-firstboot unblocks Wi-Fi, sets the domain, brings clover-ap up" check_firstboot_script
   check "udev rules of Clover are linked" bash -c 'ls /etc/udev/rules.d/ | grep -q px4fmu'
   check "examples symlink" test -d "${USER_HOME}/examples"
   check "/home/pi/.ros/www exists" test -d "${USER_HOME}/.ros/www"

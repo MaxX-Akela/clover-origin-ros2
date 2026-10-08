@@ -1,11 +1,12 @@
 [Unit]
 Description=Clover first boot setup (hostname, Wi-Fi access point name)
-After=NetworkManager.service cloud-init.service
+After=NetworkManager.service cloud-init.service systemd-rfkill.service
 Wants=NetworkManager.service
 ConditionPathExists=!/var/lib/clover/firstboot.done
 
 [Service]
 Type=oneshot
+TimeoutStartSec=180
 ExecStart=/usr/local/sbin/clover-firstboot
 RemainAfterExit=yes
 

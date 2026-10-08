@@ -25,6 +25,10 @@ export DEBIAN_FRONTEND=${DEBIAN_FRONTEND:-noninteractive}
 PACKAGES=(
   # network
   network-manager
+  # Recommends of network-manager: without dnsmasq-base the "shared" mode (access point DHCP/DNS) cannot start,
+  # and apt runs here with --no-install-recommends
+  dnsmasq-base
+  nftables
   wpasupplicant
   wireless-regdb
   iw
