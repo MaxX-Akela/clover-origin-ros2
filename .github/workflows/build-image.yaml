@@ -70,7 +70,7 @@ jobs:
       - name: Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends parted e2fsprogs rsync xz-utils util-linux
+          sudo apt-get install -y --no-install-recommends parted e2fsprogs rsync xz-utils util-linux zerofree
 
       - name: Free space before the build
         run: df -h
@@ -115,15 +115,24 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: clover-image
           path: images
 
+      - name: Prepare the files (parts of 1900 MiB if the image is not smaller)
+        run: image/scripts/prepare-release-assets.sh images release-assets 1900
+
       - name: Attach the image to the release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            images/*.img.xz
-            images/*.sha256
-          prerelease: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload "$TAG" release-assets/*.img.xz* --clobber --repo "$GITHUB_REPOSITORY"
+          if [ -s release-assets/release-notes.md ]; then
+            { gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body -q .body; echo; cat release-assets/release-notes.md; } > body.md
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file body.md
+          fi
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease

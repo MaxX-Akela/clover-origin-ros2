@@ -67,6 +67,17 @@ grow_image() {
   loop_detach
 }
 
+# TEMPLATE: zero_free_blocks <DEVICE>; free blocks hold the remains of deleted files, xz would store them.
+# zerofree works on an unmounted ext4 only; without it the image is just bigger.
+zero_free_blocks() {
+  if command -v zerofree > /dev/null; then
+    echo_stamp "zerofree $1"
+    zerofree -v "$1"
+  else
+    echo_stamp "WARNING: zerofree is not installed, free blocks are not zeroed, the image compresses worse" ERROR >&2
+  fi
+}
+
 shrink_image() {
   local img=$1 block_count block_size fs_bytes start sectors rc=0
   check_layout "$img"
@@ -75,7 +86,10 @@ shrink_image() {
   loop_attach "$img"
   e2fsck -fy "${LOOPDEV}p2" || rc=$?
   ((rc <= 1)) || die "e2fsck failed with code $rc"
+  zero_free_blocks "${LOOPDEV}p2"
   resize2fs -M "${LOOPDEV}p2"
+  # Without errors, or the image is not written (ext4 must be unmounted here)
+  e2fsck -fn "${LOOPDEV}p2" || die "e2fsck -fn reports errors in the shrunk root filesystem of $img"
   block_count=$(dumpe2fs -h "${LOOPDEV}p2" 2> /dev/null | awk -F: '/^Block count:/ {gsub(/ /, "", $2); print $2}')
   block_size=$(dumpe2fs -h "${LOOPDEV}p2" 2> /dev/null | awk -F: '/^Block size:/ {gsub(/ /, "", $2); print $2}')
   loop_detach
@@ -86,7 +100,7 @@ shrink_image() {
   sectors=$(sectors_for_bytes "$fs_bytes")
   echo ", ${sectors}" | sfdisk -N 2 --no-reread --no-tell-kernel "$img" > /dev/null
   truncate -s $(((start + sectors) * 512)) "$img"
-  echo_stamp "$img is $(stat -c %s "$img") bytes" SUCCESS
+  echo_stamp "$img is $(stat -c %s "$img") bytes ($(($(stat -c %s "$img") / 1048576)) MiB)" SUCCESS
 }
 
 cleanup() {

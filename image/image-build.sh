@@ -39,7 +39,41 @@ IMAGE_SIZE=${IMAGE_SIZE:-8G}
 IMAGES_DIR=${IMAGES_DIR:-"${SCRIPT_DIR}/out/images"}
 CACHE_DIR=${CACHE_DIR:-"${SCRIPT_DIR}/out/cache"}
 
+# Limit of an asset of a GitHub Release is 2 GiB (2147483648 bytes); the target and the margin for drivers
+XZ_TARGET_MIB=${CLOVER_XZ_TARGET_MIB:-1900}
+
 GUARD_FLAG=()
+
+# TEMPLATE: size_mib <FILE>
+size_mib() {
+  echo $(($(stat -c %s "$1") / 1048576))
+}
+
+# TEMPLATE: xz_memlimit_mib; 75% of the memory: xz -9e needs about 700 MiB per thread, xz lowers the number of threads
+xz_memlimit_mib() {
+  local kib
+  kib=$(awk '/^MemTotal:/ {print $2}' "${1:-/proc/meminfo}")
+  echo $((kib * 3 / 4 / 1024))
+}
+
+# TEMPLATE: check_xz_size <FILE_SIZE_MIB> <TARGET_MIB>; a warning only (release.yml splits big files)
+check_xz_size() {
+  if (($1 > $2)); then
+    echo_stamp "WARNING: the image is $1 MiB, more than the target of $2 MiB; the publish job splits it" ERROR >&2
+    return 1
+  fi
+}
+
+# Compresses the image: -9e, memory-limited, the format stays .img.xz (Raspberry Pi Imager)
+compress_image() {
+  local raw_mib xz_mib
+  raw_mib=$(size_mib "$IMAGE_PATH")
+  echo_stamp "Compressing the image (${raw_mib} MiB), xz -9e, memory limit $(xz_memlimit_mib) MiB"
+  xz -9e -T0 --memlimit-compress="$(xz_memlimit_mib)MiB" --force --verbose "$IMAGE_PATH"
+  xz_mib=$(size_mib "${IMAGE_PATH}.xz")
+  echo_stamp "Compressed: ${raw_mib} MiB -> ${xz_mib} MiB (ratio $((xz_mib * 100 / raw_mib))%)" SUCCESS
+  check_xz_size "$xz_mib" "$XZ_TARGET_MIB" || true
+}
 
 chroot_exec() {
   "${SCRIPT_DIR}/scripts/image-chroot.sh" "${GUARD_FLAG[@]}" "$IMAGE_PATH" exec "$@"
@@ -129,19 +163,24 @@ main() {
   # Copy the repository to the image, without git history and build artifacts
   chroot_copy "$REPO_DIR" /home/pi/ros2_ws/src/clover-origin-ros2 \
     --exclude=/.git --exclude=/build --exclude=/install --exclude=/log \
-    --exclude=/image/out --exclude=__pycache__
+    --exclude=/image --exclude=/.github --exclude=/CLAUDE.md --exclude=/.gitattributes --exclude=/.gitignore \
+    --exclude=__pycache__
 
   chroot_exec /root/clover-image/image-software.sh
   chroot_exec /root/clover-image/image-ros.sh "$version"
   chroot_exec /root/clover-image/image-network.sh
   chroot_exec /root/clover-image/image-hardware.sh
+  # The cleanup is in two parts: the removed packages are checked by image-validate, which needs the build scripts
+  echo_stamp "Allocated size of the image file before the cleanup: $(du -h "$IMAGE_PATH" | cut -f1)"
+  chroot_exec /root/clover-image/image-cleanup.sh packages
   chroot_exec /root/clover-image/image-validate.sh
-  chroot_exec /root/clover-image/image-cleanup.sh
+  chroot_exec /root/clover-image/image-cleanup.sh final
 
   "${SCRIPT_DIR}/scripts/image-resize.sh" "${GUARD_FLAG[@]}" shrink "$IMAGE_PATH"
+  echo_stamp "Size of the image file after the shrink: $(size_mib "$IMAGE_PATH") MiB"
+  ls -l "$IMAGES_DIR"
 
-  echo_stamp "Compressing the image"
-  xz -T0 -6 --force "$IMAGE_PATH"
+  compress_image
   (cd "$IMAGES_DIR" && sha256sum "$(basename "${IMAGE_PATH}.xz")" > "$(basename "${IMAGE_PATH}.xz").sha256")
   ls -l "$IMAGES_DIR"
   echo_stamp "Image is ready: ${IMAGE_PATH}.xz (not tested on hardware)" SUCCESS

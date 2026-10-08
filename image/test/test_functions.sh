@@ -328,6 +328,74 @@ CLOVER_COLCON_CONSOLE="${TMP}/none.log" build_failure_report "$ws" nobody jazzy 
 expect "report: falls back to events.log and the newest build_*" grep -q 'tail -n 80 .*build_1/events.log' "$report"
 expect "report: works without a workspace" bash -c "source '${IMAGE_DIR}/scripts/common.sh'; build_failure_report '${TMP}/nowhere' nobody jazzy"
 
+# --- image-cleanup.sh, image-build.sh, release assets: a fictitious tree ---------------------------------
+cl() {
+  # TEMPLATE: cl <CODE>; runs the code with the functions of image-cleanup.sh
+  bash -c "source '${IMAGE_DIR}/image-cleanup.sh'; $1"
+}
+expect "protected_filter keeps network-manager, ros, linux, libcamera" bash -c "source '${IMAGE_DIR}/image-cleanup.sh'; [[ \$(printf 'snapd\nnetwork-manager\nros-jazzy-ros-base\nlinux-image-raspi\nlibcamera0.3\n' | protected_filter | wc -l) -eq 4 ]]"
+expect "protected_filter lets snapd through" bash -c "source '${IMAGE_DIR}/image-cleanup.sh'; [[ -z \$(echo snapd | protected_filter) ]]"
+expect "simulated_removals parses Remv lines" bash -c "source '${IMAGE_DIR}/image-cleanup.sh'; [[ \$(printf 'Inst foo\nRemv snapd [2.1]\nRemv libx:arm64 [1]\n' | simulated_removals | tr '\n' ' ') == 'snapd libx ' ]]"
+
+fake="${TMP}/fake"
+mkdir -p "${fake}/usr/share/doc/foo" "${fake}/usr/share/doc/bar" "${fake}/usr/share/man/man1" "${fake}/usr/share/info" \
+  "${fake}/usr/share/locale/de/LC_MESSAGES" "${fake}/usr/share/locale/ru/LC_MESSAGES" "${fake}/usr/share/locale/en_GB/LC_MESSAGES" "${fake}/var/log/journal/x"
+echo lic > "${fake}/usr/share/doc/foo/copyright"; echo ch > "${fake}/usr/share/doc/foo/changelog.gz"; echo x > "${fake}/usr/share/doc/bar/README"
+ln -s foo "${fake}/usr/share/doc/foolink"
+echo m > "${fake}/usr/share/man/man1/a.1"; echo m > "${fake}/usr/share/locale/de/LC_MESSAGES/a.mo"; echo m > "${fake}/usr/share/locale/ru/LC_MESSAGES/a.mo"
+echo m > "${fake}/usr/share/locale/en_GB/LC_MESSAGES/a.mo"; echo a > "${fake}/usr/share/locale/locale.alias"
+echo log > "${fake}/var/log/syslog"; echo log > "${fake}/var/log/syslog.1"; echo log > "${fake}/var/log/old.gz"; echo j > "${fake}/var/log/journal/x/a.journal"
+cl "clean_docs '${fake}'; clean_locales '${fake}'; truncate_logs '${fake}'"
+expect "docs: copyright stays" test -f "${fake}/usr/share/doc/foo/copyright"
+expect_fail "docs: changelog removed" test -e "${fake}/usr/share/doc/foo/changelog.gz"
+expect_fail "docs: empty directory removed" test -e "${fake}/usr/share/doc/bar"
+expect "docs: link to a directory stays valid" test -f "${fake}/usr/share/doc/foolink/copyright"
+expect_fail "man pages removed" test -e "${fake}/usr/share/man/man1/a.1"
+expect_fail "locale de removed" test -e "${fake}/usr/share/locale/de"
+expect "locales ru, en_GB, locale.alias stay" bash -c "test -d '${fake}/usr/share/locale/ru' && test -d '${fake}/usr/share/locale/en_GB' && test -f '${fake}/usr/share/locale/locale.alias'"
+expect "log file kept and empty" bash -c "test -f '${fake}/var/log/syslog' && test ! -s '${fake}/var/log/syslog'"
+expect_fail "rotated logs removed" bash -c "test -e '${fake}/var/log/syslog.1' || test -e '${fake}/var/log/old.gz'"
+expect_fail "journal removed" test -e "${fake}/var/log/journal/x"
+
+ws="${TMP}/ws"
+mkdir -p "${ws}/build/pkg" "${ws}/log" "${ws}/install/pkg" "${ws}/src/pkg/__pycache__"
+echo g > "${ws}/build/pkg/gen.py"; echo s > "${ws}/src/pkg/a.py"; ln -s "${ws}/src/pkg/a.py" "${ws}/install/pkg/a.py"
+cl "clean_workspace '${ws}'"
+expect_fail "workspace: build removed when install does not use it" test -e "${ws}/build"
+expect_fail "workspace: log removed" test -e "${ws}/log"
+expect "workspace: src and install stay" bash -c "test -f '${ws}/src/pkg/a.py' && test -L '${ws}/install/pkg/a.py'"
+expect_fail "workspace: __pycache__ in src removed" test -e "${ws}/src/pkg/__pycache__"
+mkdir -p "${ws}/build/pkg"; echo g > "${ws}/build/pkg/gen.py"; ln -s "${ws}/build/pkg/gen.py" "${ws}/install/pkg/gen.py"
+cl "clean_workspace '${ws}'"
+expect "workspace: build is kept when install links into it" test -f "${ws}/build/pkg/gen.py"
+
+# image-build.sh
+expect "xz_memlimit_mib: 75% of MemTotal" bash -c "printf 'MemTotal: 16777216 kB\n' > '${TMP}/meminfo'; source '${IMAGE_DIR}/image-build.sh'; [[ \$(xz_memlimit_mib '${TMP}/meminfo') -eq 12288 ]]"
+expect "check_xz_size: under the target" bash -c "source '${IMAGE_DIR}/image-build.sh'; check_xz_size 1800 1900"
+expect_fail "check_xz_size: over the target" bash -c "source '${IMAGE_DIR}/image-build.sh'; check_xz_size 2000 1900"
+
+# image-validate.sh: checks of the cleanup
+expect "licenses: too few copyright files" bash -c "source '${IMAGE_DIR}/image-validate.sh'; ! check_licenses_kept '${fake}'"
+mkdir -p "${TMP}/gr/etc/cloud/cloud.cfg.d" "${TMP}/gr/usr/bin"
+printf 'cloud_init_modules:\n - growpart\n - resizefs\n' > "${TMP}/gr/etc/cloud/cloud.cfg"
+printf '#!/bin/sh\n' > "${TMP}/gr/usr/bin/growpart"; chmod +x "${TMP}/gr/usr/bin/growpart"
+expect "rootfs grows: growpart and resizefs are in cloud.cfg" bash -c "source '${IMAGE_DIR}/image-validate.sh'; check_rootfs_grows '${TMP}/gr'"
+printf 'growpart:\n  mode: off\n' > "${TMP}/gr/etc/cloud/cloud.cfg.d/99-off.cfg"
+expect_fail "rootfs grows: disabled growpart is rejected" bash -c "source '${IMAGE_DIR}/image-validate.sh'; check_rootfs_grows '${TMP}/gr'"
+
+# prepare-release-assets.sh: a small file is not split, a big one is split, parts join to the same file
+rel="${TMP}/rel"
+mkdir -p "${rel}/small" "${rel}/big"
+head -c 1048576 /dev/urandom > "${rel}/small/a.img.xz"
+head -c 5242880 /dev/urandom > "${rel}/big/b.img.xz"
+"${IMAGE_DIR}/scripts/prepare-release-assets.sh" "${rel}/small" "${rel}/out-small" 2 > /dev/null 2>&1 || true
+"${IMAGE_DIR}/scripts/prepare-release-assets.sh" "${rel}/big" "${rel}/out-big" 2 > /dev/null 2>&1 || true
+expect "release: file below the limit goes whole" bash -c "test -f '${rel}/out-small/a.img.xz' && test ! -s '${rel}/out-small/release-notes.md'"
+expect "release: parts of the big file exist" bash -c "ls '${rel}/out-big'/b.img.xz.part?? | wc -l | grep -qx 3"
+expect "release: the whole big file is not uploaded" test ! -e "${rel}/out-big/b.img.xz"
+expect "release: parts join to the original and hashes match" bash -c "cd '${rel}/out-big' && sha256sum -c b.img.xz.parts.sha256 && cat b.img.xz.part?? > '${rel}/joined' && cmp '${rel}/joined' '${rel}/big/b.img.xz' && [[ \$(cut -d' ' -f1 b.img.xz.sha256) == \$(sha256sum '${rel}/joined' | cut -d' ' -f1) ]]"
+expect "release: notes have the Linux and Windows instructions" bash -c "grep -q 'cat b.img.xz.part00' '${rel}/out-big/release-notes.md' && grep -q 'copy /b b.img.xz.part00+b.img.xz.part01+b.img.xz.part02' '${rel}/out-big/release-notes.md'"
+
 # --- static checks of the assets -------------------------------------------------------------------------
 expect "clover.service name and ExecStart" grep -q 'ros2 launch clover clover.launch.py' "${IMAGE_DIR}/assets/clover.service"
 expect_fail "clover.service does not need roscore" grep -qi roscore "${IMAGE_DIR}/assets/clover.service"
@@ -338,3 +406,4 @@ if ((failures > 0)); then
   exit 1
 fi
 echo "All function cases passed"
+

@@ -25,7 +25,7 @@ sudo -E image/image-build.sh            # в CI (CI=true), нативный arm6
 
 Порядок: скачивание базового образа Ubuntu 24.04.5 preinstalled server arm64+raspi с проверкой SHA256 → расширение до `IMAGE_SIZE` →
 `image-init.sh` → копирование репозитория → `image-software.sh` → `image-ros.sh` → `image-network.sh` → `image-hardware.sh` →
-`image-validate.sh` → `image-cleanup.sh` → усечение → `xz`.
+`image-cleanup.sh packages` → `image-validate.sh` → `image-cleanup.sh final` → усечение (zerofree, resize2fs -M, e2fsck -fn) → `xz -9e`.
 
 | Файл | Назначение |
 |---|---|

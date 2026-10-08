@@ -1039,3 +1039,11 @@ tornado (`test_web.py`). **Страницы в браузере не откры�
   `chroot_failure_diag` как EXIT-trap всех chroot-стадий (последний шаг, apt, логи dpkg, `ros2_ws/log`, units, journal).
 - `check-apt-packages.sh` (preflight): печатает кандидатов `liblz4-*`/`libzstd-*`, считает ошибкой отсутствие `noble-updates` на раннере и
   показывает `apt-get -s install ros-base` (информационно: это состояние раннера, а не образа, ошибку исходного вида он не воспроизводит).
+
+## Размер образа (image/)
+
+- Лимит ассета GitHub Release: 2147483648 байт. Цель для `.img.xz`: <= 1900 МиБ (`CLOVER_XZ_TARGET_MIB`). При превышении publish-job режет файл на части по 1900 МиБ (`image/scripts/prepare-release-assets.sh`), инструкция склейки попадает в описание релиза.
+- Корневая ФС усечена до минимума (`resize2fs -M`). Рост на карте на первой загрузке обеспечивают модули cloud-init `growpart` и `resizefs` (так же устроен исходный образ Ubuntu); `image-validate.sh` проверяет, что они включены и что есть `growpart`. На железе не проверено.
+- `build/` в `~/ros2_ws` удаляется, только если ни одна ссылка из `install/` не ведёт в него (`--symlink-install` ссылается на сгенерированные файлы в `build/`); иначе остаётся с предупреждением в логе.
+- `ufw` оставлен: в образах Ubuntu он неактивен и не мешает ни ssh, ни точке доступа (DHCP/DNS NetworkManager).
+- Из копии репозитория в `~/ros2_ws/src` исключены `image/`, `.github/`, `CLAUDE.md`, `.gitignore`, `.gitattributes`.

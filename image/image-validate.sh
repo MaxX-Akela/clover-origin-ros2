@@ -239,6 +239,84 @@ diag_network() {
   show_network_state
 }
 
+# Removed by image-cleanup.sh; the first two are the big ones and a hard requirement
+REMOVED_PACKAGES=(snapd lxd-installer)
+REMOVED_PACKAGES_SOFT=(open-iscsi multipath-tools open-vm-tools modemmanager unattended-upgrades fwupd apport popularity-contest landscape-common sysstat)
+KEPT_PACKAGES=(network-manager avahi-daemon openssh-server nginx cloud-init ros-jazzy-ros-base ros-jazzy-camera-ros ros-jazzy-rmw-cyclonedds-cpp)
+
+# TEMPLATE: packages_absent <PACKAGES...>
+packages_absent() {
+  local pkg bad=0
+  for pkg in "$@"; do
+    if dpkg-query -W -f='${db:Status-Abbrev}' "$pkg" 2> /dev/null | grep -q '^.i'; then
+      echo "still installed: ${pkg}"
+      bad=1
+    fi
+  done
+  return $bad
+}
+
+# TEMPLATE: packages_present <PACKAGES...>
+packages_present() {
+  local pkg bad=0
+  for pkg in "$@"; do
+    if ! dpkg-query -W -f='${db:Status-Abbrev}' "$pkg" 2> /dev/null | grep -q '^.i'; then
+      echo "missing: ${pkg}"
+      bad=1
+    fi
+  done
+  return $bad
+}
+
+check_snap_removed() {
+  [[ ! -e /snap && ! -e /var/lib/snapd ]]
+}
+
+check_apt_timers_masked() {
+  local unit state bad=0
+  for unit in apt-daily.timer apt-daily-upgrade.timer; do
+    state=$(systemctl is-enabled "$unit" 2> /dev/null || true)
+    if [[ $state != masked ]]; then
+      echo "${unit}: ${state:-not found}"
+      bad=1
+    fi
+  done
+  return $bad
+}
+
+check_apt_consistent() {
+  local audit
+  apt-get check || return 1
+  audit=$(dpkg --audit)
+  if [[ -n $audit ]]; then
+    echo "$audit"
+    return 1
+  fi
+}
+
+# TEMPLATE: check_licenses_kept [ROOT]; the files are removed from /usr/share/doc, copyright stays
+check_licenses_kept() {
+  local root=${1:-} count
+  count=$(find "${root}/usr/share/doc" -name copyright \( -type f -o -type l \) 2> /dev/null | wc -l)
+  echo "copyright files: ${count}"
+  ((count > 50))
+}
+
+# The image is shrunk to the minimum; the root filesystem grows on the first boot by cloud-init (growpart, resizefs)
+# TEMPLATE: check_rootfs_grows [ROOT]
+check_rootfs_grows() {
+  local root=${1:-} cfg
+  command -v growpart > /dev/null || [[ -x ${root}/usr/bin/growpart ]] || { echo "growpart (cloud-guest-utils) is missing"; return 1; }
+  cfg="${root}/etc/cloud/cloud.cfg"
+  [[ -f $cfg ]] || { echo "no ${cfg}"; return 1; }
+  if ! grep -qE '^ *- *growpart' "$cfg" || ! grep -qE '^ *- *resizefs' "$cfg"; then
+    echo "growpart / resizefs are not in the modules of cloud.cfg"
+    return 1
+  fi
+  # nothing may switch it off
+  ! grep -rqsE '^ *(growpart|resize_rootfs) *:.*(off|false|disabled)|mode: *(off|false)' "${root}/etc/cloud/cloud.cfg.d"
+}
+
 check_boot_files() {
   local cmdline=${BOOT_DIR}/cmdline.txt config=${BOOT_DIR}/config.txt
   [[ $(wc -l < "$cmdline") -eq 1 ]] || return 1
@@ -317,6 +395,16 @@ main() {
   check "no ROS_HOSTNAME / ROS_IP in the environment files" check_no_ros1_env
   warn_check "libcamera of ROS has Raspberry Pi pipelines (vc4, pisp); CSI camera is not verified" show_libcamera_pipelines
 
+  echo_stamp "Cleanup: removed and kept packages, apt state"
+  check "removed: ${REMOVED_PACKAGES[*]}" packages_absent "${REMOVED_PACKAGES[@]}"
+  warn_check "removed: ${REMOVED_PACKAGES_SOFT[*]}" packages_absent "${REMOVED_PACKAGES_SOFT[@]}"
+  check "no /snap and /var/lib/snapd" check_snap_removed
+  check "apt-daily timers are masked" check_apt_timers_masked
+  check "kept: ${KEPT_PACKAGES[*]}" packages_present "${KEPT_PACKAGES[@]}"
+  check "libcamera of the image is kept" bash -c "dpkg-query -W -f='\${Package}\n' | grep -q '^libcamera'"
+  check "apt-get check and dpkg --audit are clean" check_apt_consistent
+  check "licenses (copyright files) are kept" check_licenses_kept
+  check "the root filesystem grows on the first boot (cloud-init growpart, resizefs)" check_rootfs_grows
   echo_stamp "Services and configuration files"
   check "clover.service is enabled" systemctl is-enabled clover.service
   check "clover-firstboot.service is enabled" systemctl is-enabled clover-firstboot.service
