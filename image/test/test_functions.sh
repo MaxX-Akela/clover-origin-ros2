@@ -118,6 +118,40 @@ expect_fail "a root tree is not a boot partition" check_pi_boot "$good"
 expect "image_diag never fails on fake trees" image_diag fake.img "$good" "$goodboot"
 expect "the failure reason is reported" bash -c "source '${IMAGE_DIR}/scripts/image-chroot.sh'; [[ \$(check_ubuntu_root '$bad' || true) == *ID=ubuntu* ]]"
 
+# --- image-validate.sh: unit files in a chroot (no systemd as PID 1) --------------------------------
+# "systemctl cat" exits 0 in a chroot for any name, so the units are looked for as files
+# shellcheck source=../image-validate.sh
+source "${IMAGE_DIR}/image-validate.sh"
+unit_with="${TMP}/unit-with"
+mkdir -p "${unit_with}/usr/lib/systemd/system" "${unit_with}/etc/systemd/system/multi-user.target.wants"
+touch "${unit_with}/usr/lib/systemd/system/roscore.service"
+ln -s /usr/lib/systemd/system/roscore.service "${unit_with}/etc/systemd/system/multi-user.target.wants/roscore.service"
+unit_without="${TMP}/unit-without"
+mkdir -p "${unit_without}/usr/lib/systemd/system" "${unit_without}/etc/systemd/system"
+touch "${unit_without}/usr/lib/systemd/system/clover.service"
+expect_fail "check_no_unit fails when roscore.service exists" check_no_unit roscore.service "$unit_with"
+expect "check_no_unit passes without roscore.service" check_no_unit roscore.service "$unit_without"
+dangling="${TMP}/unit-dangling"
+mkdir -p "${dangling}/etc/systemd/system/multi-user.target.wants"
+ln -s /nowhere "${dangling}/etc/systemd/system/multi-user.target.wants/roscore.service"
+expect_fail "check_no_unit catches a dangling enable symlink" check_no_unit roscore.service "$dangling"
+etc_only="${TMP}/unit-etc"
+mkdir -p "${etc_only}/etc/systemd/system"
+touch "${etc_only}/etc/systemd/system/roscore.service"
+expect_fail "check_no_unit looks in /etc/systemd/system" check_no_unit roscore.service "$etc_only"
+expect "check_no_unit passes on an empty root" check_no_unit roscore.service "${TMP}"
+expect "check_no_unit names the file it found" bash -c "source '${IMAGE_DIR}/image-validate.sh'; [[ \$(check_no_unit roscore.service '$unit_with' || true) == *usr/lib/systemd/system/roscore.service* ]]"
+# check(): a failure is reported with the command and counted, the last step is the name of the check
+expect "check reports the failing check and keeps its name as last step" bash -c "
+  source '${IMAGE_DIR}/image-validate.sh'
+  check 'sample failing check' bash -c 'echo some-output; exit 3' 2> '${TMP}/check.err' > /dev/null
+  [[ \$FAILURES == 1 && \$CLOVER_LAST_STEP == 'check: sample failing check' ]]
+  grep -q 'exit code: 3' '${TMP}/check.err' && grep -q 'some-output' '${TMP}/check.err'"
+expect "check does not count a passing check" bash -c "
+  source '${IMAGE_DIR}/image-validate.sh'
+  check 'sample ok' true > /dev/null
+  [[ \$FAILURES == 0 ]]"
+
 # --- common.sh: apt sources of the image ------------------------------------------------------------
 # The Ubuntu Raspberry Pi image as it was seen in CI: noble and noble-security, no noble-updates
 src_d="${TMP}/sources.d"

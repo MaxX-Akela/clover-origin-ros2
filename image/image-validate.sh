@@ -32,27 +32,86 @@ as_user() {
   runuser -u "$USER_NAME" -- env "HOME=${USER_HOME}" "USER=${USER_NAME}" "LOGNAME=${USER_NAME}" "$@"
 }
 
-# TEMPLATE: check <DESCRIPTION> <COMMAND...>
+FAILED_CHECKS=()
+UNIT_DIRS=(/etc/systemd/system /usr/lib/systemd/system /lib/systemd/system /run/systemd/system)
+
+# TEMPLATE: [CHECK_DIAG=<FUNCTION>] check <DESCRIPTION> <COMMAND...>
+# On a failure prints the description, the exact command and its output; CHECK_DIAG (optional)
+# is a function that prints what was examined. The name of the check goes to the "last step"
+# of the failure report of common.sh.
 check() {
-  local description=$1
+  local description=$1 output rc=0
   shift
-  if "$@" > /dev/null 2>&1; then
+  CLOVER_LAST_STEP="running check: ${description}"
+  output=$("$@" 2>&1) || rc=$?
+  if ((rc == 0)); then
     echo_stamp "ok: ${description}" SUCCESS
   else
     echo_stamp "FAILED: ${description}" ERROR
+    {
+      echo "  command: $*"
+      echo "  exit code: ${rc}"
+      if [[ -n $output ]]; then
+        echo "  output:"
+        tail -n 20 <<< "$output" | sed 's/^/    /'
+      fi
+      if [[ -n ${CHECK_DIAG:-} ]]; then
+        echo "  diagnostics (${CHECK_DIAG}):"
+        "$CHECK_DIAG" 2>&1 | sed 's/^/    /' || true
+      fi
+    } >&2
+    FAILED_CHECKS+=("$description")
     FAILURES=$((FAILURES + 1))
   fi
+  CLOVER_LAST_STEP="check: ${description}"
 }
 
 # Same, but only a warning
 warn_check() {
   local description=$1
   shift
+  CLOVER_LAST_STEP="running check: ${description}"
   if "$@" > /dev/null 2>&1; then
     echo_stamp "ok: ${description}" SUCCESS
   else
     echo_stamp "WARNING: ${description}" ERROR
   fi
+  CLOVER_LAST_STEP="check: ${description}"
+}
+
+# TEMPLATE: unit_files <NAME> [ROOT]; prints the files of the unit (also dangling symlinks and
+# *.wants/*.requires links). Files are looked for directly: in a chroot "systemctl cat" prints
+# "Running in chroot, ignoring command" and exits 0 for any name, so it cannot be used here.
+unit_files() {
+  local name=$1 root=${2:-} dir
+  for dir in "${UNIT_DIRS[@]}"; do
+    [[ -d ${root}${dir} ]] || continue
+    find "${root}${dir}" -maxdepth 2 \( -name "$name" -o -name "${name}.d" \) -print 2> /dev/null
+  done
+}
+
+# TEMPLATE: check_no_unit <NAME> [ROOT]
+check_no_unit() {
+  local found
+  found=$(unit_files "$1" "${2:-}")
+  if [[ -n $found ]]; then
+    echo "unit file(s) of $1 exist:"
+    echo "$found"
+    return 1
+  fi
+}
+
+diag_roscore_unit() {
+  local dir
+  for dir in "${UNIT_DIRS[@]}"; do
+    echo "--- ls -la ${dir}"
+    # shellcheck disable=SC2012 # a listing for people, not for parsing
+    ls -la "$dir" 2>&1 | head -n 60
+    echo "--- grep -ril roscore ${dir}"
+    grep -ril roscore "$dir" 2>&1 | head -n 20
+  done
+  echo "--- dpkg -S for the found files"
+  unit_files roscore.service | while IFS= read -r f; do dpkg -S "$f" 2>&1; done
 }
 
 in_ros() {
@@ -188,7 +247,7 @@ main() {
   check "clover.service is enabled" systemctl is-enabled clover.service
   check "clover-firstboot.service is enabled" systemctl is-enabled clover-firstboot.service
   check "NetworkManager, nginx, avahi-daemon are enabled" bash -c 'systemctl is-enabled NetworkManager.service nginx.service avahi-daemon.service'
-  check "no roscore.service" bash -c '! systemctl cat roscore.service'
+  CHECK_DIAG=diag_roscore_unit check "no roscore.service" check_no_unit roscore.service
   warn_check "systemd-analyze verify of the units" systemd-analyze verify /etc/systemd/system/clover.service /etc/systemd/system/clover-firstboot.service
   check "nginx -t" nginx -t
   check "Wi-Fi access point profile" check_ap_profile
@@ -206,6 +265,7 @@ main() {
   check "colcon test roswww_static" run_hardware_free_tests
 
   if ((FAILURES > 0)); then
+    CLOVER_LAST_STEP="failed checks: $(printf '%s; ' "${FAILED_CHECKS[@]}")"
     die "${FAILURES} check(s) failed"
   fi
   echo_stamp "All checks passed (nothing was started on hardware)" SUCCESS
