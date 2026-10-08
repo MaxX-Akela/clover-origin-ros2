@@ -103,6 +103,12 @@ build_clover() {
   local jobs
   jobs=$(build_jobs)
   echo_stamp "Build Clover (${CLOVER_COLCON_PACKAGES[*]}) with ${jobs} job(s)"
+  # --symlink-install links the sources, and a checkout from Windows loses the executable bit
+  # (ros2 run then fails with "No executable found")
+  local script
+  for script in roswww_static/src/update clover/src/mavros_params.py clover/src/selfcheck.py clover/src/waitfile; do
+    chmod +x "$(readlink -f "${WS_DIR}/src/clover-origin-ros2/${script}")"
+  done
   : > "$CLOVER_COLCON_CONSOLE"
   chown "${USER_NAME}:${USER_NAME}" "$CLOVER_COLCON_CONSOLE"
   # cohesion: the whole output of a package is printed when it ends, a failure is visible in the CI log
