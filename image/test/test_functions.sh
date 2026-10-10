@@ -279,6 +279,8 @@ printf 'network:\n  version: 2\n  renderer: NetworkManager\n' > "${TMP}/nmroot/e
 expect "wlan0 managed: clean root passes" check_wlan_managed "${TMP}/nmroot"
 printf '[keyfile]\nunmanaged-devices=interface-name:wlan0\n' > "${TMP}/nmroot/etc/NetworkManager/conf.d/99-bad.conf"
 expect_fail "wlan0 managed: unmanaged-devices is rejected" check_wlan_managed "${TMP}/nmroot"
+printf '[keyfile]\nunmanaged-devices=*,except:type:wifi,except:type:gsm\n' > "${TMP}/nmroot/etc/NetworkManager/conf.d/99-bad.conf"
+expect "wlan0 managed: Ubuntu default, everything but Wi-Fi is unmanaged, passes" check_wlan_managed "${TMP}/nmroot"
 rm "${TMP}/nmroot/etc/NetworkManager/conf.d/99-bad.conf"
 printf 'network:\n  version: 2\n  wifis:\n    wlan0: {}\n' > "${TMP}/nmroot/etc/netplan/50-cloud-init.yaml"
 expect_fail "wlan0 managed: netplan wifis is rejected" check_wlan_managed "${TMP}/nmroot"

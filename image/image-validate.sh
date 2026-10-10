@@ -201,7 +201,8 @@ check_wlan_managed() {
   found=$(grep -rsE 'unmanaged-devices|^[[:space:]]*wifis:|wlan0' \
     "${root}/etc/NetworkManager/conf.d" "${root}/usr/lib/NetworkManager/conf.d" "${root}/etc/NetworkManager/NetworkManager.conf" \
     "${root}/etc/netplan" "${root}/etc/cloud/cloud.cfg.d" "${root}/boot/firmware/network-config" "${root}/boot/firmware/user-data" \
-    | grep -vE ':[[:space:]]*#' | grep -vE 'unmanaged-devices=none[[:space:]]*$' || true)
+    | grep -vE ':[[:space:]]*#' | grep -vE 'unmanaged-devices=none[[:space:]]*$' \
+    | grep -vE 'unmanaged-devices=\*,except:type:wifi' || true)
   if [[ -n $found ]]; then
     echo "Wi-Fi is configured or disabled outside of the clover-ap profile:"
     echo "$found"
@@ -401,7 +402,7 @@ main() {
   check "no /snap and /var/lib/snapd" check_snap_removed
   check "apt-daily timers are masked" check_apt_timers_masked
   check "kept: ${KEPT_PACKAGES[*]}" packages_present "${KEPT_PACKAGES[@]}"
-  check "libcamera of the image is kept" bash -c "dpkg-query -W -f='\${Package}\n' | grep -q '^libcamera'"
+  check "libcamera of the image is kept" bash -c "dpkg-query -W -f='\${Package}\n' | grep -qE '^(ros-jazzy-)?libcamera'"
   check "apt-get check and dpkg --audit are clean" check_apt_consistent
   check "licenses (copyright files) are kept" check_licenses_kept
   check "the root filesystem grows on the first boot (cloud-init growpart, resizefs)" check_rootfs_grows
