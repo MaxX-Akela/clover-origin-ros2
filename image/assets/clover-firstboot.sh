@@ -64,7 +64,7 @@ wifi_prepare() {
   local regdom
   rfkill unblock wifi || log "rfkill unblock failed"
   nmcli radio wifi on || log "nmcli radio wifi on failed"
-  if regdom=$(cmdline_regdom); then
+  if regdom=$(cmdline_regdom /proc/cmdline); then
     iw reg set "$regdom" || log "iw reg set ${regdom} failed"
   else
     log "WARNING: no cfg80211.ieee80211_regdom in /proc/cmdline"

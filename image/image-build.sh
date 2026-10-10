@@ -68,8 +68,8 @@ check_xz_size() {
 compress_image() {
   local raw_mib xz_mib
   raw_mib=$(size_mib "$IMAGE_PATH")
-  echo_stamp "Compressing the image (${raw_mib} MiB), xz -9e, memory limit $(xz_memlimit_mib) MiB"
-  xz -9e -T0 --memlimit-compress="$(xz_memlimit_mib)MiB" --force --verbose "$IMAGE_PATH"
+  echo_stamp "Compressing the image (${raw_mib} MiB), xz -9e, memory limit $(xz_memlimit_mib /proc/meminfo) MiB"
+  xz -9e -T0 --memlimit-compress="$(xz_memlimit_mib /proc/meminfo)MiB" --force --verbose "$IMAGE_PATH"
   xz_mib=$(size_mib "${IMAGE_PATH}.xz")
   echo_stamp "Compressed: ${raw_mib} MiB -> ${xz_mib} MiB (ratio $((xz_mib * 100 / raw_mib))%)" SUCCESS
   check_xz_size "$xz_mib" "$XZ_TARGET_MIB" || true

@@ -68,9 +68,9 @@ step() {
   local fn=$1 before after
   shift
   echo_stamp "cleanup: ${fn}"
-  before=$(used_mib)
+  before=$(used_mib /)
   "$fn" "$@"
-  after=$(used_mib)
+  after=$(used_mib /)
   STEP_LOG+=("${fn}"$'\t'"$((before - after))")
   echo_stamp "cleanup: ${fn}: saved $((before - after)) MiB (used ${before} -> ${after} MiB)" SUCCESS
 }
